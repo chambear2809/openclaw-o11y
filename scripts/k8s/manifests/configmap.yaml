@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-config
+  labels:
+    app.kubernetes.io/name: openclaw
+    app.kubernetes.io/component: gateway
+data:
+  openclaw.json: |
+    {
+      gateway: {
+        mode: "local",
+        port: 18789,
+        bind: "lan",
+        auth: {
+          mode: "token",
+          token: "${OPENCLAW_GATEWAY_TOKEN}",
+          allowTailscale: false,
+        },
+      },
+    }
+  AGENTS.md: |
+    # OpenClaw Test Lab
+
+    This gateway is running inside the single-use Kubernetes test lab.
+
+    Priorities:
+    - Keep changes scoped to the lab namespace unless explicitly asked otherwise.
+    - Preserve telemetry flowing to the local Splunk OpenTelemetry collector.
+    - Prefer concise diagnostics and direct verification commands.

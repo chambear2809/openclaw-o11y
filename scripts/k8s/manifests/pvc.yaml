@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: openclaw-data
+  labels:
+    app.kubernetes.io/name: openclaw
+    app.kubernetes.io/component: gateway
+spec:
+  storageClassName: __OPENCLAW_STORAGE_CLASS__
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
