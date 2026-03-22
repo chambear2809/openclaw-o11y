@@ -20,10 +20,16 @@ The workflow in this repo was adjusted from a live cluster run. The biggest less
   Installs the Splunk OpenTelemetry Collector Helm chart with the operator and CRDs enabled.
 - `scripts/k8s/verify-lab.sh`
   Verifies the live pod was mutated, has the expected OTEL environment variables, is listening on the gateway port, and can serve an authenticated smoke request.
+- `scripts/k8s/demo-scenarios.sh`
+  Exercises the demo path and emits OpenShell-shaped traces, metrics, and logs into Splunk through the collector.
+- `scripts/k8s/demo-emitter.js`
+  The OTLP emitter used by `demo-scenarios.sh` to publish synthetic control-plane telemetry.
 - `scripts/k8s/lib.sh`
   Shared shell helpers for loading `lab.env`, resolving storage classes, and discovering an existing instrumentation object.
 - `scripts/k8s/manifests/`
   The OpenClaw ConfigMap, Deployment, Service, PVC, and kustomization used by the lab.
+- `docs/openshell-demo-path.md`
+  The source-backed OpenClaw/OpenShell/NemoClaw -> O11y architecture and demo plan for this repo.
 - `skills/openclaw-splunk-test-lab/SKILL.md`
   Codex skill instructions for repeating the deployment and troubleshooting flow.
 
@@ -259,6 +265,43 @@ scripts/k8s/verify-lab.sh --strict-gateway --smoke-gateway
 ```
 
 If that succeeds, the next likely issue is ingestion delay or the wrong UI filter, not the Kubernetes deployment.
+
+## OpenShell Demo Path
+
+The current repo still deploys OpenClaw directly on Kubernetes. The OpenShell / NemoClaw story is therefore implemented in two layers:
+
+- real OpenClaw runtime health from the deployed pod
+- synthetic OpenShell-style control-plane telemetry emitted over OTLP for dashboards, detectors, and scenario walkthroughs
+
+The design and source references are in:
+
+- `docs/openshell-demo-path.md`
+
+Once the lab is verified, exercise the demo scenarios with:
+
+```bash
+scripts/k8s/demo-scenarios.sh normal
+scripts/k8s/demo-scenarios.sh policy-blocked
+scripts/k8s/demo-scenarios.sh error-burst
+scripts/k8s/demo-scenarios.sh suspicious
+```
+
+Or run the full sequence:
+
+```bash
+scripts/k8s/demo-scenarios.sh all
+```
+
+The synthetic control-plane telemetry uses:
+
+- `service.name = openshell-demo-control-plane`
+- the same `deployment.environment` value as the OpenClaw pod
+
+If the collector HTTP endpoint is not the default `${SPLUNK_OTEL_RELEASE_NAME}-agent.${SPLUNK_OTEL_NAMESPACE}.svc:4318`, set:
+
+```bash
+OPENSHELL_DEMO_COLLECTOR_URL=http://<collector-service>.<namespace>.svc:4318
+```
 
 ## Troubleshooting
 
