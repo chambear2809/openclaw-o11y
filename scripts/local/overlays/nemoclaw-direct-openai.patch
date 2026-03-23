@@ -1,0 +1,63 @@
+diff --git a/Dockerfile b/Dockerfile
+index c69d9e6..35fd4c2 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -80,6 +80,9 @@ RUN chmod +x /usr/local/bin/nemoclaw-start
+ ARG NEMOCLAW_MODEL=nvidia/nemotron-3-super-120b-a12b
+ ARG CHAT_UI_URL=http://127.0.0.1:18789
+ # Unique per build to ensure each image gets a fresh auth token.
++ARG NEMOCLAW_PROVIDER_BASE_URL=https://inference.local/v1
++ARG NEMOCLAW_PROVIDER_API=openai-completions
++ARG NEMOCLAW_PROVIDER_KEY_ENV=
+ # Pass --build-arg NEMOCLAW_BUILD_ID=$(date +%s) to bust the cache.
+ ARG NEMOCLAW_BUILD_ID=default
+ 
+@@ -87,7 +90,10 @@ ARG NEMOCLAW_BUILD_ID=default
+ # via os.environ, never via string interpolation into Python source code.
+ # Direct ARG interpolation into python3 -c is a code injection vector (C-2).
+ ENV NEMOCLAW_MODEL=${NEMOCLAW_MODEL} \
+-    CHAT_UI_URL=${CHAT_UI_URL}
++    CHAT_UI_URL=${CHAT_UI_URL} \
++    NEMOCLAW_PROVIDER_BASE_URL=${NEMOCLAW_PROVIDER_BASE_URL} \
++    NEMOCLAW_PROVIDER_API=${NEMOCLAW_PROVIDER_API} \
++    NEMOCLAW_PROVIDER_KEY_ENV=${NEMOCLAW_PROVIDER_KEY_ENV}
+ 
+ WORKDIR /sandbox
+ USER sandbox
+@@ -101,24 +107,30 @@ RUN python3 -c "\
+ import json, os, secrets; \
+ from urllib.parse import urlparse; \
+ model = os.environ['NEMOCLAW_MODEL']; \
++provider_base_url = os.environ.get('NEMOCLAW_PROVIDER_BASE_URL', 'https://inference.local/v1'); \
++provider_api = os.environ.get('NEMOCLAW_PROVIDER_API', 'openai-completions'); \
++provider_key_env = os.environ.get('NEMOCLAW_PROVIDER_KEY_ENV', '').strip(); \
+ chat_ui_url = os.environ['CHAT_UI_URL']; \
+ parsed = urlparse(chat_ui_url); \
+ chat_origin = f'{parsed.scheme}://{parsed.netloc}' if parsed.scheme and parsed.netloc else 'http://127.0.0.1:18789'; \
+ origins = ['http://127.0.0.1:18789']; \
+ origins = list(dict.fromkeys(origins + [chat_origin])); \
++secret_ref = {'source': 'env', 'provider': 'default', 'id': provider_key_env} if provider_key_env else None; \
++nvidia_api_key = secret_ref or 'openshell-managed'; \
++inference_api_key = secret_ref or 'unused'; \
+ config = { \
+     'agents': {'defaults': {'model': {'primary': f'inference/{model}'}}}, \
+     'models': {'mode': 'merge', 'providers': { \
+         'nvidia': { \
+-            'baseUrl': 'https://inference.local/v1', \
+-            'apiKey': 'openshell-managed', \
+-            'api': 'openai-completions', \
++            'baseUrl': provider_base_url, \
++            'apiKey': nvidia_api_key, \
++            'api': provider_api, \
+             'models': [{'id': model.split('/')[-1], 'name': model, 'reasoning': False, 'input': ['text'], 'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0}, 'contextWindow': 131072, 'maxTokens': 4096}] \
+         }, \
+         'inference': { \
+-            'baseUrl': 'https://inference.local/v1', \
+-            'apiKey': 'unused', \
+-            'api': 'openai-completions', \
++            'baseUrl': provider_base_url, \
++            'apiKey': inference_api_key, \
++            'api': provider_api, \
+             'models': [{'id': model, 'name': model, 'reasoning': False, 'input': ['text'], 'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0}, 'contextWindow': 131072, 'maxTokens': 4096}] \
+         } \
+     }}, \

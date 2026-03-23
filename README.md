@@ -26,6 +26,22 @@ The workflow in this repo was adjusted from a live cluster run. The biggest less
   The OTLP emitter used by `demo-scenarios.sh` to publish synthetic control-plane telemetry.
 - `scripts/k8s/lib.sh`
   Shared shell helpers for loading `lab.env`, resolving storage classes, and discovering an existing instrumentation object.
+- `scripts/local/bootstrap-nemoclaw.sh`
+  Runs the stock local NemoClaw/OpenShell bootstrap, configures the OpenShell gateway to use OpenAI through a host relay, and restarts OpenClaw under OTEL instrumentation.
+- `scripts/local/ensure-collector.sh`
+  Reuses a local Docker OTEL collector on `4318` when one exists, or starts a repo-owned collector container if none is found.
+- `scripts/local/ensure-gateway-otlp-forwarder.sh`
+  Deploys an in-gateway OTLP forwarder service inside the OpenShell k3s cluster so the sandbox can export telemetry to a reachable cluster service instead of a host port.
+- `scripts/local/ensure-openai-relay.sh`
+  Starts or reuses a host-local OpenAI relay so the OpenShell gateway can call OpenAI through `host.docker.internal` even when direct egress to `api.openai.com` is blocked.
+- `scripts/local/openai-relay.js`
+  The lightweight OpenAI-compatible relay used by the local NemoClaw/OpenShell flow.
+- `scripts/local/verify-nemoclaw-otel.sh`
+  Verifies the repeatable local path end to end: collector, relay, forwarder, gateway env, proxy-routed OTLP reachability, and optional agent smoke.
+- `scripts/local/presets/otel-collector.yaml`
+  Policy preset that allows the sandbox to export OTLP traces to the in-gateway OTLP forwarder service.
+- `scripts/local/lab.env.example`
+  Example environment file for the local NemoClaw/OpenShell flow.
 - `scripts/k8s/manifests/`
   The OpenClaw ConfigMap, Deployment, Service, PVC, and kustomization used by the lab.
 - `docs/openshell-demo-path.md`
@@ -185,6 +201,62 @@ scripts/k8s/deploy-lab.sh --show-token
 ```
 
 This is the model that was used successfully during the live test in the cluster that already had Splunk installed.
+
+### Mode 3: Local NemoClaw/OpenShell With OTEL
+
+Use this when you want the real stock `nemoclaw onboard` Docker bootstrap on your machine instead of the Kubernetes lab.
+
+1. Copy the local example file:
+
+```bash
+cp scripts/local/lab.env.example scripts/local/lab.env
+```
+
+2. Set `OPENAI_API_KEY`.
+   If your machine sits behind a TLS interception proxy, also set `LOCAL_EXTRA_CA_FILE` or `LOCAL_EXTRA_CA_COMMON_NAME`.
+
+3. If you already have a local OTEL collector in Docker exposing `4318`, nothing else is required.
+   If you do not, set `SPLUNK_REALM` and `SPLUNK_ACCESS_TOKEN` so this repo can start one for you.
+
+4. Run:
+
+```bash
+scripts/local/bootstrap-nemoclaw.sh --smoke
+```
+
+This local path does five things:
+
+1. Reuses an existing Docker collector on `4318` or starts `openclaw-local-otel-collector` if none is found.
+2. Starts a host-local OpenAI relay on `host.docker.internal:8787` unless `LOCAL_OPENAI_BASE_URL` is explicitly set.
+3. Runs the stock NemoClaw onboarding flow to create the OpenShell gateway and sandbox locally.
+4. Configures the OpenShell gateway and system inference routes to `openai-direct / gpt-4.1-mini` while keeping the sandbox on the stock `https://inference.local/v1` path.
+5. Deploys an in-gateway OTLP forwarder service in the OpenShell k3s cluster and publishes it on `http://openclaw-otlp-forwarder.openshell.svc.cluster.local:4318`.
+6. Applies a sandbox policy preset that allows that forwarder service through the OpenShell proxy, including the required `allowed_ips` override for the private service IP.
+7. Restarts `openclaw gateway run` inside the sandbox with `@splunk/otel`, the host CA bundle if needed, and `OTEL_EXPORTER_OTLP_ENDPOINT` pointed at the in-gateway forwarder service while preserving OpenShell's proxy env.
+
+The OpenAI relay exists because some enterprise environments allow the host and the OpenShell gateway container to reach OpenAI while direct `api.openai.com` egress from sandbox pods is blocked. The OTLP forwarder exists because sandbox pods may also be unable to export directly to host ports on `4318` even though the gateway container can.
+
+If you re-run the script against an existing sandbox, add `--recreate`.
+
+If the sandbox already exists and you only need to reapply the OTEL-wrapped gateway restart plus a smoke prompt, use:
+
+```bash
+scripts/local/restart-nemoclaw-otel.sh --smoke
+```
+
+The local smoke path uses `openclaw agent` without `--local`. That exercises the real OpenShell gateway inference route instead of the embedded direct-provider path.
+
+To verify the local OTEL path after bootstrap or restart, run:
+
+```bash
+scripts/local/verify-nemoclaw-otel.sh
+```
+
+If you also want to try a live agent prompt through the gateway, add:
+
+```bash
+scripts/local/verify-nemoclaw-otel.sh --smoke-agent
+```
 
 ## Post-Deploy Verification
 

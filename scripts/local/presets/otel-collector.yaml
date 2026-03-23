@@ -1,0 +1,37 @@
+preset:
+  name: otel-collector
+  description: "Allow OpenClaw to install OTEL JS and export OTLP through the OpenShell sandbox proxy to the in-gateway forwarder."
+
+network_policies:
+  npm_registry_node:
+    name: npm_registry_node
+    endpoints:
+      - host: registry.npmjs.org
+        port: 443
+        access: full
+    binaries:
+      - { path: /usr/local/bin/npm }
+      - { path: /usr/local/bin/node }
+
+  otel_forwarder:
+    name: otel_forwarder
+    endpoints:
+      - host: __LOCAL_OTEL_FORWARDER_SERVICE_HOST__
+        port: __LOCAL_OTEL_FORWARDER_HTTP_PORT__
+        allowed_ips:
+          - __LOCAL_OTEL_FORWARDER_CLUSTER_IP__
+        access: full
+      - host: __LOCAL_OTEL_FORWARDER_SERVICE_FQDN__
+        port: __LOCAL_OTEL_FORWARDER_HTTP_PORT__
+        allowed_ips:
+          - __LOCAL_OTEL_FORWARDER_CLUSTER_IP__
+        access: full
+      - host: __LOCAL_OTEL_FORWARDER_CLUSTER_IP__
+        port: __LOCAL_OTEL_FORWARDER_HTTP_PORT__
+        allowed_ips:
+          - __LOCAL_OTEL_FORWARDER_CLUSTER_IP__
+        access: full
+    binaries:
+      - { path: /usr/local/bin/openclaw }
+      - { path: /usr/local/bin/openclaw-gateway }
+      - { path: /usr/local/bin/node }
