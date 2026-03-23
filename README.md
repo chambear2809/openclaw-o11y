@@ -52,6 +52,8 @@ The workflow in this repo was adjusted from a live cluster run. The biggest less
   Static validation for shell, Node.js, and rendered Kubernetes manifests.
 - `docs/openshell-demo-path.md`
   The source-backed OpenClaw/OpenShell/NemoClaw -> O11y architecture and demo plan for this repo.
+- `docs/architecture.md`
+  Mermaid diagrams for the Kubernetes lab, the local NemoClaw/OpenShell path, and their shared Splunk destination.
 - `skills/openclaw-splunk-test-lab/SKILL.md`
   Codex skill instructions for repeating the deployment and troubleshooting flow.
 
@@ -67,6 +69,8 @@ At a high level, the lab does the following:
 6. Tags telemetry with `OTEL_SERVICE_NAME=openclaw` and `OTEL_RESOURCE_ATTRIBUTES=deployment.environment=Openclaw`.
 
 The repository currently uses the official Splunk operator-based auto-instrumentation path. That matters because the Splunk side is not purely namespace-scoped. Installing the operator introduces cluster-scoped CRDs and webhooks. This is fine for a dedicated test cluster, but you should be deliberate about it.
+
+For current-state Mermaid diagrams that show both the Kubernetes lab and the local NemoClaw/OpenShell OTEL path, see [docs/architecture.md](docs/architecture.md).
 
 ## Upstream Stability Notes
 
