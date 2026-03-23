@@ -90,5 +90,15 @@ render_openclaw_manifests() {
   local manifest_dir="$1"
   local storage_class="$2"
 
-  kubectl kustomize "${manifest_dir}" | sed "s|__OPENCLAW_STORAGE_CLASS__|${storage_class}|g"
+  kubectl kustomize "${manifest_dir}" | env \
+    OPENCLAW_STORAGE_CLASS="${storage_class}" \
+    OPENCLAW_IMAGE="${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}" \
+    OPENCLAW_NODE_OPTIONS="${OPENCLAW_NODE_OPTIONS_BASE:---max-old-space-size=1536}" \
+    OPENCLAW_SERVICE_NAME="${OPENCLAW_SERVICE_NAME:-openclaw}" \
+    OPENCLAW_RESOURCE_ATTRIBUTES="deployment.environment=${OPENCLAW_DEPLOYMENT_ENVIRONMENT:-Openclaw}" \
+    OPENCLAW_SECRET_NAME="${OPENCLAW_SECRET_NAME:-openclaw-secrets}" \
+    OPENCLAW_MEMORY_REQUEST="${OPENCLAW_MEMORY_REQUEST:-1Gi}" \
+    OPENCLAW_MEMORY_LIMIT="${OPENCLAW_MEMORY_LIMIT:-2Gi}" \
+    OPENCLAW_INSTRUMENTATION_REF="${OPENCLAW_INSTRUMENTATION_REF:-}" \
+    node "${SCRIPT_DIR}/render-openclaw-manifests.js"
 }

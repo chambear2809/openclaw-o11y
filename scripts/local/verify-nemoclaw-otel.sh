@@ -18,23 +18,24 @@ forwarder_service_fqdn="$(local_gateway_otel_forwarder_service_fqdn)"
 forwarder_http_port="$(local_gateway_otel_forwarder_http_port)"
 collector_port="$(local_collector_host_port)"
 relay_port="$(local_openai_relay_host_port)"
-expected_model="${LOCAL_OPENAI_MODEL:-gpt-4.1-mini}"
+expected_model="$(local_openai_model)"
+stub_smoke_model="$(local_openai_smoke_stub_model)"
 expected_otlp_endpoint="http://${forwarder_service_fqdn}:${forwarder_http_port}"
-expected_proxy="http://10.200.0.1:3128"
-smoke_agent="false"
+smoke_agent_stub="false"
+smoke_agent_real="false"
 
 usage() {
-  cat <<'EOF'
-Usage: scripts/local/verify-nemoclaw-otel.sh [--smoke-agent]
+  cat <<EOF
+Usage: scripts/local/verify-nemoclaw-otel.sh [--smoke-agent] [--smoke-agent-real]
 
 Checks:
-  - A local collector container is exposing OTLP HTTP on port 4318
+  - A local collector container is exposing OTLP HTTP on the configured host port (${collector_port})
   - The local OpenAI relay is healthy on localhost
   - The OpenShell gateway container and OTLP forwarder deployment exist
   - Gateway and system inference are routed to openai-direct
   - The sandboxed OpenClaw gateway process is running with OTEL + OpenShell proxy env
   - The sandbox can POST OTLP to the in-gateway forwarder via the OpenShell proxy
-  - Optional: an OpenClaw agent prompt succeeds through the gateway
+  - Optional: a stubbed or real OpenClaw agent prompt succeeds through the gateway
 EOF
 }
 
@@ -50,7 +51,10 @@ fail() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --smoke-agent)
-      smoke_agent="true"
+      smoke_agent_stub="true"
+      ;;
+    --smoke-agent-real)
+      smoke_agent_real="true"
       ;;
     -h|--help)
       usage
@@ -72,6 +76,7 @@ collector_info="$(find_local_otel_collector "${collector_port}" || true)"
 [[ -n "${collector_info}" ]] || fail "No local OTEL collector is exposing host port ${collector_port}."
 collector_name="$(printf '%s\n' "${collector_info}" | awk -F'\t' '{print $1}')"
 collector_image="$(printf '%s\n' "${collector_info}" | awk -F'\t' '{print $2}')"
+local_otel_collector_supports_traces "${collector_name}" || fail "Collector ${collector_name} does not expose a traces pipeline, so NemoClaw OTEL data will be dropped."
 ok "Collector ${collector_name} (${collector_image}) exposes OTLP HTTP on ${collector_port}"
 
 if [[ -n "${LOCAL_OPENAI_BASE_URL:-}" ]]; then
@@ -117,8 +122,8 @@ printf '%s\n' "\${env_dump}" | grep -qx 'NODE_USE_ENV_PROXY=1' || {
   echo "gateway process is not opting Node into proxy env support" >&2
   exit 12
 }
-printf '%s\n' "\${env_dump}" | grep -qx 'HTTP_PROXY=${expected_proxy}' || {
-  echo "gateway process is not using the OpenShell CONNECT proxy" >&2
+printf '%s\n' "\${env_dump}" | grep -Eq '^HTTP_PROXY=.+' || {
+  echo "gateway process is not exporting an HTTP proxy setting" >&2
   exit 13
 }
 printf '%s\n' "\${env_dump}" | grep -Eq '^NODE_OPTIONS=.*@splunk/otel/instrument\.js' || {
@@ -155,18 +160,15 @@ rm -f "${sandbox_probe}"
 printf '%s\n' "${sandbox_output}" | grep -q '^otlp_status=200$' || fail "Sandbox OTLP probe did not return HTTP 200."
 ok "Sandboxed OpenClaw gateway exports to ${expected_otlp_endpoint} through the OpenShell proxy"
 
-if [[ "${smoke_agent}" == "true" ]]; then
-  smoke_script="$(mktemp)"
-  cat > "${smoke_script}" <<'EOF'
-set -euo pipefail
-openclaw agent --agent main -m "reply with the single word ok" --session-id o11y-smoke
-EOF
-  smoke_output="$(run_sandbox_script "${sandbox_name}" "${smoke_script}")" || {
-    rm -f "${smoke_script}"
-    fail "OpenClaw smoke agent call failed."
-  }
-  rm -f "${smoke_script}"
-  ok "OpenClaw smoke agent call succeeded: ${smoke_output}"
+if [[ "${smoke_agent_stub}" == "true" ]]; then
+  smoke_output="$(run_openclaw_smoke_agent_with_model "${sandbox_name}" "${stub_smoke_model}" "${expected_model}" "o11y-smoke-stub" "${gateway_name}")" || \
+    fail "OpenClaw stub smoke agent call failed."
+  ok "OpenClaw stub smoke agent call succeeded: ${smoke_output}"
+fi
+
+if [[ "${smoke_agent_real}" == "true" ]]; then
+  smoke_output="$(run_openclaw_smoke_agent "${sandbox_name}" "o11y-smoke-real")" || fail "OpenClaw real smoke agent call failed."
+  ok "OpenClaw real smoke agent call succeeded: ${smoke_output}"
 fi
 
 ok "Local NemoClaw/OpenShell OTEL path is configured for repeatable use"

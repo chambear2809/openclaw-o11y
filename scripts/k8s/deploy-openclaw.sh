@@ -43,6 +43,7 @@ Environment:
   OPENCLAW_NODE_OPTIONS_BASE  Base NODE_OPTIONS before OTel injection. Default: --max-old-space-size=1536
   OPENCLAW_MEMORY_REQUEST  OpenClaw memory request. Default: 1Gi
   OPENCLAW_MEMORY_LIMIT   OpenClaw memory limit. Default: 2Gi
+  OPENCLAW_INSTRUMENTATION_REF  Optional <namespace>/<name> for Node.js auto-instrumentation
 
 Credential input:
   Export at least one of:
@@ -159,6 +160,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 require_tool kubectl
+require_tool node
 
 if [[ "${DELETE}" == "true" ]]; then
   kubectl delete namespace "${OPENCLAW_NAMESPACE}" --ignore-not-found >/dev/null
@@ -177,15 +179,6 @@ fi
 
 OPENCLAW_STORAGE_CLASS="$(resolve_storage_class)"
 render_openclaw_manifests "${MANIFEST_DIR}" "${OPENCLAW_STORAGE_CLASS}" | kubectl -n "${OPENCLAW_NAMESPACE}" apply -f - >/dev/null
-kubectl -n "${OPENCLAW_NAMESPACE}" set image deployment/openclaw openclaw="${OPENCLAW_IMAGE}" >/dev/null
-kubectl -n "${OPENCLAW_NAMESPACE}" set env deployment/openclaw \
-  NODE_OPTIONS="${OPENCLAW_NODE_OPTIONS_BASE}" \
-  OTEL_SERVICE_NAME="${OPENCLAW_SERVICE_NAME}" \
-  OTEL_RESOURCE_ATTRIBUTES="deployment.environment=${OPENCLAW_DEPLOYMENT_ENVIRONMENT}" >/dev/null
-kubectl -n "${OPENCLAW_NAMESPACE}" set resources deployment/openclaw -c openclaw \
-  --requests="cpu=500m,memory=${OPENCLAW_MEMORY_REQUEST}" \
-  --limits="cpu=1,memory=${OPENCLAW_MEMORY_LIMIT}" >/dev/null
-kubectl -n "${OPENCLAW_NAMESPACE}" rollout restart deployment/openclaw >/dev/null
 kubectl -n "${OPENCLAW_NAMESPACE}" rollout status deployment/openclaw --timeout=10m
 
 echo "OpenClaw deployed in namespace ${OPENCLAW_NAMESPACE}."

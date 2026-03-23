@@ -18,6 +18,8 @@ spec:
       labels:
         app.kubernetes.io/name: openclaw
         app.kubernetes.io/component: gateway
+      annotations:
+        __OPENCLAW_POD_TEMPLATE_ANNOTATIONS__: "__OPENCLAW_POD_TEMPLATE_ANNOTATIONS_VALUE__"
     spec:
       automountServiceAccountToken: false
       securityContext:
@@ -52,7 +54,7 @@ spec:
               mountPath: /tmp
       containers:
         - name: openclaw
-          image: ghcr.io/openclaw/openclaw:latest
+          image: __OPENCLAW_IMAGE__
           imagePullPolicy: IfNotPresent
           env:
             - name: NODE_ENV
@@ -60,14 +62,14 @@ spec:
             - name: HOME
               value: /home/node
             - name: NODE_OPTIONS
-              value: --max-old-space-size=1536
+              value: __OPENCLAW_NODE_OPTIONS__
             - name: OTEL_SERVICE_NAME
-              value: openclaw
+              value: __OPENCLAW_SERVICE_NAME__
             - name: OTEL_RESOURCE_ATTRIBUTES
-              value: deployment.environment=Openclaw
+              value: __OPENCLAW_RESOURCE_ATTRIBUTES__
           envFrom:
             - secretRef:
-                name: openclaw-secrets
+                name: __OPENCLAW_SECRET_NAME__
           ports:
             - name: gateway
               containerPort: 18789
@@ -101,10 +103,10 @@ spec:
           resources:
             requests:
               cpu: 500m
-              memory: 1Gi
+              memory: __OPENCLAW_MEMORY_REQUEST__
             limits:
               cpu: "1"
-              memory: 2Gi
+              memory: __OPENCLAW_MEMORY_LIMIT__
           volumeMounts:
             - name: openclaw-data
               mountPath: /home/node/.openclaw

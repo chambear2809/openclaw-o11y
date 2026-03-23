@@ -33,8 +33,8 @@ done
 
 "${SCRIPT_DIR}/ensure-collector.sh" >/dev/null
 
-gateway_container="openshell-cluster-$(local_openshell_gateway_name)"
-if ! docker ps --format '{{.Names}}' | grep -qx "${gateway_container}"; then
+gateway_container="$(gateway_container_name)"
+if ! gateway_container_running; then
   echo "OpenShell gateway container is not running: ${gateway_container}" >&2
   exit 1
 fi
@@ -45,7 +45,7 @@ forwarder_http_port="$(local_gateway_otel_forwarder_http_port)"
 forwarder_host_port="$(local_gateway_otel_forwarder_host_port)"
 forwarder_health_port="$(local_gateway_otel_forwarder_health_port)"
 forwarder_image="$(local_gateway_otel_forwarder_image)"
-forwarder_target_endpoint="$(local_gateway_otel_forwarder_target_endpoint)"
+forwarder_target_endpoint="http://$(format_host_for_url "$(resolve_gateway_host_ip)")":$(local_collector_host_port)
 
 manifest_file="$(mktemp)"
 sed \

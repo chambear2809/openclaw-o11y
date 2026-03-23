@@ -19,13 +19,18 @@ require_tool ssh
 
 require_env OPENAI_API_KEY
 
-run_smoke="false"
+run_stub_smoke="false"
+run_real_smoke="false"
 recreate_sandbox="false"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --smoke)
-      run_smoke="true"
+      run_stub_smoke="true"
+      shift
+      ;;
+    --smoke-real)
+      run_real_smoke="true"
       shift
       ;;
     --recreate)
@@ -34,7 +39,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     *)
       echo "Unknown option: $1" >&2
-      echo "Usage: scripts/local/bootstrap-nemoclaw.sh [--recreate] [--smoke]" >&2
+      echo "Usage: scripts/local/bootstrap-nemoclaw.sh [--recreate] [--smoke] [--smoke-real]" >&2
       exit 1
       ;;
   esac
@@ -49,11 +54,10 @@ if [[ -n "${extra_ca_pem}" ]]; then
   extra_ca_b64="$(printf '%s' "${extra_ca_pem}" | base64 | tr -d '\n')"
 fi
 
-nemoclaw_dir="$(resolve_nemoclaw_repo_dir)"
-if [[ ! -d "${nemoclaw_dir}/.git" ]]; then
-  echo "Cloning NVIDIA NemoClaw into ${nemoclaw_dir}"
-  git clone https://github.com/NVIDIA/NemoClaw.git "${nemoclaw_dir}"
-fi
+nemoclaw_dir="$(ensure_nemoclaw_repo_checkout)"
+echo "Using NemoClaw repo: ${nemoclaw_dir}"
+echo "Requested NemoClaw ref: $(nemoclaw_ref)"
+echo "Checked out NemoClaw revision: $(checked_out_nemoclaw_rev "${nemoclaw_dir}")"
 
 if ! command -v openshell >/dev/null 2>&1; then
   echo "Installing openshell CLI"
@@ -66,13 +70,9 @@ if ! command -v openshell >/dev/null 2>&1; then
 fi
 
 sandbox_name="${NEMOCLAW_SANDBOX_NAME:-my-assistant}"
-openai_model="${LOCAL_OPENAI_MODEL:-gpt-4.1-mini}"
+openai_model="$(local_openai_model)"
+stub_smoke_model="$(local_openai_smoke_stub_model)"
 bootstrap_model="${NEMOCLAW_BOOTSTRAP_MODEL:-${openai_model}}"
-if [[ -n "${LOCAL_OPENAI_BASE_URL:-}" ]]; then
-  openai_base_url="${LOCAL_OPENAI_BASE_URL}"
-else
-  openai_base_url="$("${SCRIPT_DIR}/ensure-openai-relay.sh" --print-endpoint)"
-fi
 deployment_environment="${OPENCLAW_DEPLOYMENT_ENVIRONMENT:-Openclaw}"
 gateway_name="$(local_openshell_gateway_name)"
 
@@ -87,6 +87,12 @@ env \
   NVIDIA_API_KEY="${NEMOCLAW_BOOTSTRAP_DUMMY_NVIDIA_KEY:-dummy}" \
   node "${nemoclaw_dir}/bin/nemoclaw.js" onboard --non-interactive
 
+if [[ -n "${LOCAL_OPENAI_BASE_URL:-}" ]]; then
+  openai_base_url="${LOCAL_OPENAI_BASE_URL}"
+else
+  openai_base_url="$("${SCRIPT_DIR}/ensure-openai-relay.sh" --print-endpoint)"
+fi
+
 echo "Configuring OpenShell gateway inference for OpenAI"
 openshell provider create -g "${gateway_name}" \
   --name openai-direct \
@@ -97,36 +103,7 @@ openshell provider create -g "${gateway_name}" \
     openai-direct \
     --credential "OPENAI_API_KEY" \
     --config "OPENAI_BASE_URL=${openai_base_url}" >/dev/null
-openshell inference set -g "${gateway_name}" --no-verify --provider openai-direct --model "${openai_model}" >/dev/null
-openshell inference set -g "${gateway_name}" --system --no-verify --provider openai-direct --model "${openai_model}" >/dev/null
-
-echo "Syncing NemoClaw status metadata to the direct OpenAI route"
-onboarded_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-sandbox_onboard_config="$(node -e '
-const config = {
-  endpointType: "custom",
-  endpointUrl: process.argv[1],
-  ncpPartner: null,
-  model: process.argv[2],
-  profile: "openai-direct",
-  credentialEnv: "OPENAI_API_KEY",
-  provider: "openai-direct",
-  providerLabel: "OpenAI API",
-  onboardedAt: process.argv[3],
-};
-process.stdout.write(JSON.stringify(config, null, 2));
-' "${openai_base_url}" "${openai_model}" "${onboarded_at}")"
-sync_script="$(mktemp)"
-cat > "${sync_script}" <<EOF
-set -euo pipefail
-command -v stty >/dev/null 2>&1 && stty -echo || true
-mkdir -p ~/.nemoclaw
-cat > ~/.nemoclaw/config.json <<'EOF_CFG'
-${sandbox_onboard_config}
-EOF_CFG
-EOF
-run_sandbox_script "${sandbox_name}" "${sync_script}"
-rm -f "${sync_script}"
+set_openai_direct_inference_model "${openai_model}" "${gateway_name}"
 
 collector_endpoint="$("${SCRIPT_DIR}/ensure-gateway-otlp-forwarder.sh" --print-endpoint)"
 collector_forwarder_cluster_ip="$("${SCRIPT_DIR}/ensure-gateway-otlp-forwarder.sh" --print-cluster-ip)"
@@ -142,8 +119,7 @@ sed \
   -e "s/__LOCAL_OTEL_FORWARDER_CLUSTER_IP__/${collector_forwarder_cluster_ip}/g" \
   -e "s/__LOCAL_OTEL_FORWARDER_HTTP_PORT__/${collector_forwarder_http_port}/g" \
   "${SCRIPT_DIR}/presets/otel-collector.yaml" > "${preset_file}"
-cp "${preset_file}" "${nemoclaw_dir}/nemoclaw-blueprint/policies/presets/otel-collector.yaml"
-node -e "const policies = require('${nemoclaw_dir}/bin/lib/policies'); policies.applyPreset('${sandbox_name}', 'otel-collector');"
+node "${SCRIPT_DIR}/apply-policy-preset.js" "${sandbox_name}" "${preset_file}"
 rm -f "${preset_file}"
 
 instrument_script="$(mktemp)"
@@ -225,13 +201,12 @@ echo "Sandbox OTLP endpoint: ${collector_endpoint}"
 echo "Host OTLP endpoint: ${collector_host_endpoint}"
 echo "Gateway UI: http://127.0.0.1:18789"
 
-if [[ "${run_smoke}" == "true" ]]; then
-  smoke_script="$(mktemp)"
-  cat > "${smoke_script}" <<'EOF'
-set -euo pipefail
-openclaw agent --agent main -m "reply with the single word ok" --session-id o11y-smoke
-EOF
-  echo "Running OpenClaw smoke prompt"
-  run_sandbox_script "${sandbox_name}" "${smoke_script}"
-  rm -f "${smoke_script}"
+if [[ "${run_stub_smoke}" == "true" ]]; then
+  echo "Running default OpenClaw stub smoke prompt via ${stub_smoke_model}"
+  run_openclaw_smoke_agent_with_model "${sandbox_name}" "${stub_smoke_model}" "${openai_model}" "o11y-smoke-stub" "${gateway_name}"
+fi
+
+if [[ "${run_real_smoke}" == "true" ]]; then
+  echo "Running secondary OpenClaw real-provider smoke prompt via ${openai_model}"
+  run_openclaw_smoke_agent "${sandbox_name}" "o11y-smoke-real"
 fi

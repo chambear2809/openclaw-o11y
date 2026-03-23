@@ -86,21 +86,10 @@ if [[ "${SKIP_SPLUNK_OTEL_INSTALL}" != "true" ]]; then
     echo "SPLUNK_REALM/SPLUNK_ACCESS_TOKEN not set; attempting to reuse an existing instrumentation object." >&2
   fi
 fi
-"${SCRIPT_DIR}/deploy-openclaw.sh"
 
 INSTRUMENTATION_REF="$(resolve_instrumentation_ref)"
-
-kubectl -n "${OPENCLAW_NAMESPACE}" patch deployment openclaw --type merge -p "$(cat <<EOF
-spec:
-  template:
-    metadata:
-      annotations:
-        instrumentation.opentelemetry.io/inject-nodejs: "${INSTRUMENTATION_REF}"
-        instrumentation.opentelemetry.io/container-names: "openclaw"
-EOF
-)" >/dev/null
-kubectl -n "${OPENCLAW_NAMESPACE}" rollout restart deployment/openclaw >/dev/null
-kubectl -n "${OPENCLAW_NAMESPACE}" rollout status deployment/openclaw --timeout=10m
+env OPENCLAW_INSTRUMENTATION_REF="${INSTRUMENTATION_REF}" \
+  "${SCRIPT_DIR}/deploy-openclaw.sh"
 
 cat <<EOF
 Lab ready.
