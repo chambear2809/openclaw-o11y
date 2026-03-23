@@ -28,6 +28,8 @@ The workflow in this repo was adjusted from a live cluster run. The biggest less
   Shared shell helpers for loading `lab.env`, resolving storage classes, and discovering an existing instrumentation object.
 - `scripts/local/bootstrap-nemoclaw.sh`
   Runs the stock local NemoClaw/OpenShell bootstrap, configures the OpenShell gateway to use OpenAI through a host relay, and restarts OpenClaw under OTEL instrumentation.
+- `scripts/local/restart-nemoclaw-otel.sh`
+  Reapplies the repo-managed OTEL bootstrap to an existing local NemoClaw/OpenShell sandbox and can rerun the stubbed or real smoke path without recreating the sandbox.
 - `scripts/local/ensure-collector.sh`
   Reuses a local Docker OTEL collector on the configured host port, default `4318`, when one exists, or starts a repo-owned collector container if none is found. When the repo owns the collector, it also scrapes `agent-sandbox-controller` Prometheus metrics from the embedded OpenShell k3s cluster.
 - `scripts/local/ensure-gateway-otlp-forwarder.sh`
@@ -40,6 +42,8 @@ The workflow in this repo was adjusted from a live cluster run. The biggest less
   The lightweight OpenAI-compatible relay used by the local NemoClaw/OpenShell flow.
 - `scripts/local/emit-test-trace.sh`
   Sends synthetic OTLP traces directly to the local collector so you can validate Splunk ingest without NemoClaw, OpenShell, or a live provider request.
+- `scripts/local/emit-service-map-demo.sh`
+  Sends synthetic multi-service traces to the local collector so Splunk APM can render a connected local `nemolaw` service map beyond the real `openclaw -> openai-relay` edge.
 - `scripts/local/verify-nemoclaw-otel.sh`
   Verifies the repeatable local path end to end: collector, relay, agent-sandbox metrics scrape, forwarder, gateway env, proxy-routed OTLP reachability, and optional stubbed or real agent smoke.
 - `scripts/local/presets/otel-collector.yaml`
@@ -175,7 +179,7 @@ Those memory settings are not arbitrary. They were added because the initial liv
 
 ## Deployment Modes
 
-There are two intended ways to use this repo.
+There are three intended ways to use this repo.
 
 ### Mode 1: Install Splunk OTel From This Repo
 
@@ -265,7 +269,7 @@ This local path does nine things:
 4. Configures the OpenShell gateway and system inference routes to `openai-direct / gpt-4.1-mini` while keeping the sandbox on the stock `https://inference.local/v1` path.
 5. Deploys an in-gateway OTLP forwarder service in the OpenShell k3s cluster and publishes it on `http://openclaw-otlp-forwarder.openshell.svc.cluster.local:4318`.
 6. Applies a repo-owned OTEL sandbox policy preset through `openshell policy set`, including the required `allowed_ips` override for the private service IP plus direct package-install egress for the pinned Node.js and Python OTel bootstrap dependencies.
-7. Restarts `openclaw gateway run` inside the sandbox with `@splunk/otel`, a repo-owned Python `sitecustomize.py`, the host CA bundle if needed, and `OTEL_EXPORTER_OTLP_ENDPOINT` pointed at the in-gateway forwarder service while preserving OpenShell's proxy env.
+7. Restarts `nemoclaw-start` inside the sandbox with `@splunk/otel`, a repo-owned Python `sitecustomize.py`, the host CA bundle if needed, and `OTEL_EXPORTER_OTLP_ENDPOINT` pointed at the in-gateway forwarder service while preserving OpenShell's proxy env.
 8. Covers the NemoClaw Python helper processes under the same `service.name=openclaw`, including a startup span and subprocess spans for the auto-pair watcher launched by `nemoclaw-start`.
 9. Starts the repo-owned host OpenAI relay as a separately instrumented `openai-relay` service that exports to the same local collector, so real gateway traffic can produce an `openclaw -> openai-relay` edge in Splunk APM.
 
@@ -344,11 +348,17 @@ The secondary real-provider smoke uses `LOCAL_OPENAI_SMOKE_TIMEOUT_SECONDS`, def
 
 ### Accessing The Local NemoClaw UI
 
-The local bootstrap and restart scripts print `Gateway UI: http://127.0.0.1:18789` after the sandbox gateway has been restarted.
+The local bootstrap and restart scripts print `Gateway UI: http://127.0.0.1:18789` after the sandbox gateway has been restarted, but they do not create the local port forward themselves.
 
 With the repo defaults, the OpenShell gateway name is `nemoclaw` and the sandbox name is `my-assistant`. If you changed either value in `scripts/local/lab.env`, substitute your names in the commands below.
 
-First try:
+Start the normal OpenShell forward first:
+
+```bash
+openshell forward start -d -g nemoclaw 18789 my-assistant
+```
+
+Then try:
 
 ```text
 http://127.0.0.1:18789/
@@ -513,7 +523,7 @@ This validates shell syntax, Node.js syntax, and both rendered Kubernetes manife
 - without instrumentation annotations
 - with an explicit `OPENCLAW_INSTRUMENTATION_REF`
 
-The same validation runs in GitHub Actions on pushes and pull requests.
+The same validation runs in GitHub Actions on pull requests and pushes to `main`.
 
 ## Troubleshooting
 
