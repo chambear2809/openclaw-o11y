@@ -58,6 +58,35 @@ flowchart TB
   LocalCollector --> Splunk
 ```
 
+## How OpenTelemetry Works
+
+This repo uses OpenTelemetry in two different ways.
+
+### Kubernetes Lab
+
+1. `scripts/k8s/deploy-lab.sh` installs or reuses the Splunk OTel operator and an `Instrumentation` resource, then deploys OpenClaw with `instrumentation.opentelemetry.io/inject-nodejs`.
+2. The operator mutates the OpenClaw pod at admission time. The running pod gets the `opentelemetry-auto-instrumentation-nodejs` init container and an injected Node.js bootstrap in `NODE_OPTIONS`.
+3. The OpenClaw container still owns the service identity. The manifests set `OTEL_SERVICE_NAME=openclaw` and `OTEL_RESOURCE_ATTRIBUTES=deployment.environment=Openclaw`.
+4. At runtime, the injected bootstrap exports spans to the Splunk OTel collector endpoint provided in `OTEL_EXPORTER_OTLP_ENDPOINT`. In the default lab shape, that is the node-local Splunk OTel agent service.
+5. Real gateway traffic through port `18789` is what produces the useful APM spans. An injected pod with no traffic is not enough to make the service visible in Splunk APM.
+6. `scripts/k8s/verify-lab.sh` validates the OTEL path by checking the deployment annotation, the injected init container, `NODE_OPTIONS`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, and `OTEL_RESOURCE_ATTRIBUTES`.
+
+### Local NemoClaw and OpenShell
+
+1. `scripts/local/bootstrap-nemoclaw.sh` prepares the full local OTEL path: host collector, host OpenAI relay, in-gateway OTLP forwarder, policy preset, and a sandbox restart under instrumentation.
+2. The sandboxed OpenClaw gateway is instrumented directly by the repo. It restarts `nemoclaw-start` with `NODE_OPTIONS=--require .../@splunk/otel/instrument.js`.
+3. The same restart also enables Python-side coverage for NemoClaw helper processes by installing `splunk-opentelemetry`, writing a repo-owned `sitecustomize.py`, and prepending that bootstrap location to `PYTHONPATH`.
+4. The local OpenClaw runtime exports traces with `OTEL_SERVICE_NAME=openclaw`, `OTEL_RESOURCE_ATTRIBUTES=deployment.environment=nemolaw,...`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, and `OTEL_EXPORTER_OTLP_ENDPOINT` pointed at the in-gateway OTLP forwarder service.
+5. The sandbox does not export directly to the host collector. It sends OTLP HTTP to `openclaw-otlp-forwarder`, and that forwarder relays traffic to the host-local collector on the gateway-reachable host endpoint.
+6. The host OpenAI relay is instrumented as a separate `openai-relay` service and exports to the same host collector, which creates a real `openclaw -> openai-relay` service edge in Splunk APM.
+7. `scripts/local/verify-nemoclaw-otel.sh` validates the OTEL path by checking the collector, relay, forwarder, gateway env, `NODE_OPTIONS`, `PYTHONPATH`, and the sandbox OTLP POST path.
+
+### Signal Types In This Repo
+
+- Real OpenClaw runtime traffic produces traces in both modes.
+- The Kubernetes demo scenario flow also emits synthetic traces, metrics, and logs for `openshell-demo-control-plane`.
+- The local OpenClaw and OpenAI relay paths are configured for traces only. The repo-managed local collector can also scrape and export `agent-sandbox-controller` Prometheus metrics when that endpoint is available.
+
 ## Kubernetes Lab Detail
 
 This is the primary current-state deployment path in the repo. The OpenClaw gateway is real. The OpenShell-shaped control-plane telemetry is synthetic and is added by the demo scenario flow.
