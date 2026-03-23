@@ -29,7 +29,7 @@ The workflow in this repo was adjusted from a live cluster run. The biggest less
 - `scripts/local/bootstrap-nemoclaw.sh`
   Runs the stock local NemoClaw/OpenShell bootstrap, configures the OpenShell gateway to use OpenAI through a host relay, and restarts OpenClaw under OTEL instrumentation.
 - `scripts/local/ensure-collector.sh`
-  Reuses a local Docker OTEL collector on the configured host port, default `4318`, when one exists, or starts a repo-owned collector container if none is found.
+  Reuses a local Docker OTEL collector on the configured host port, default `4318`, when one exists, or starts a repo-owned collector container if none is found. When the repo owns the collector, it also scrapes `agent-sandbox-controller` Prometheus metrics from the embedded OpenShell k3s cluster.
 - `scripts/local/ensure-gateway-otlp-forwarder.sh`
   Deploys an in-gateway OTLP forwarder service inside the OpenShell k3s cluster so the sandbox can export telemetry to a reachable cluster service instead of a host port.
 - `scripts/local/ensure-openai-relay.sh`
@@ -41,7 +41,7 @@ The workflow in this repo was adjusted from a live cluster run. The biggest less
 - `scripts/local/emit-test-trace.sh`
   Sends synthetic OTLP traces directly to the local collector so you can validate Splunk ingest without NemoClaw, OpenShell, or a live provider request.
 - `scripts/local/verify-nemoclaw-otel.sh`
-  Verifies the repeatable local path end to end: collector, relay, forwarder, gateway env, proxy-routed OTLP reachability, and optional stubbed or real agent smoke.
+  Verifies the repeatable local path end to end: collector, relay, agent-sandbox metrics scrape, forwarder, gateway env, proxy-routed OTLP reachability, and optional stubbed or real agent smoke.
 - `scripts/local/presets/otel-collector.yaml`
   Policy preset that allows the sandbox to export OTLP traces to the in-gateway OTLP forwarder service.
 - `scripts/local/lab.env.example`
@@ -238,14 +238,16 @@ Local mode also expects:
 cp scripts/local/lab.env.example scripts/local/lab.env
 ```
 
-2. Set `OPENAI_API_KEY`.
+2. Set `OPENAI_API_KEY` if you want real-provider traffic or the secondary `--smoke-real` path.
+   The default stubbed local bootstrap and restart flow can now run without a real OpenAI key; when `OPENAI_API_KEY` is unset, the scripts configure a dummy provider credential and keep the deterministic smoke path provider-free.
    If your machine sits behind a TLS interception proxy, also set `LOCAL_EXTRA_CA_FILE` or `LOCAL_EXTRA_CA_COMMON_NAME`.
    The repo-managed local OTEL collector now uses that same extra CA material for outbound TLS to Splunk ingest.
-   The repo also pins the local sandbox install of `@splunk/otel` through `LOCAL_SPLUNK_OTEL_JS_VERSION`, default `4.0.0`, so reruns do not silently drift with npm.
+   The repo also pins the local sandbox installs of `@splunk/otel` and `splunk-opentelemetry` through `LOCAL_SPLUNK_OTEL_JS_VERSION`, default `4.0.0`, and `LOCAL_SPLUNK_OTEL_PYTHON_VERSION`, default `2.9.0`, so reruns do not silently drift.
    Leave `NEMOCLAW_REF` at the pinned default unless you intentionally want to validate against a newer upstream commit.
 
 3. If you already have a local OTEL collector in Docker exposing the configured host OTLP port, default `4318`, nothing else is required.
    That collector must have a `traces` pipeline. A metrics-only collector on that port is not sufficient.
+   If you want this repo to scrape `agent-sandbox-controller` metrics for you, the collector also needs a matching Prometheus scrape config, or you should let this repo manage the collector container.
    If you do not, set `SPLUNK_REALM` and `SPLUNK_ACCESS_TOKEN` so this repo can start one for you.
 
 4. Run:
@@ -254,17 +256,26 @@ cp scripts/local/lab.env.example scripts/local/lab.env
 scripts/local/bootstrap-nemoclaw.sh --smoke
 ```
 
-This local path does seven things:
+This local path does nine things:
 
 1. Reuses an existing Docker collector on the configured host port, default `4318`, or starts `openclaw-local-otel-collector` if none is found.
+   When the repo manages that collector, it attaches it to the OpenShell Docker network, bridges `agent-sandbox-controller` metrics out of the embedded k3s cluster on `LOCAL_AGENT_SANDBOX_METRICS_BRIDGE_PORT`, default `19090`, and exports those Prometheus metrics to Splunk as `service.name=agent-sandbox-controller`.
 2. Starts a host-local OpenAI relay on a gateway-reachable host endpoint unless `LOCAL_OPENAI_BASE_URL` is explicitly set.
 3. Runs the stock NemoClaw onboarding flow to create the OpenShell gateway and sandbox locally.
 4. Configures the OpenShell gateway and system inference routes to `openai-direct / gpt-4.1-mini` while keeping the sandbox on the stock `https://inference.local/v1` path.
 5. Deploys an in-gateway OTLP forwarder service in the OpenShell k3s cluster and publishes it on `http://openclaw-otlp-forwarder.openshell.svc.cluster.local:4318`.
-6. Applies a repo-owned OTEL sandbox policy preset through `openshell policy set`, including the required `allowed_ips` override for the private service IP.
-7. Restarts `openclaw gateway run` inside the sandbox with `@splunk/otel`, the host CA bundle if needed, and `OTEL_EXPORTER_OTLP_ENDPOINT` pointed at the in-gateway forwarder service while preserving OpenShell's proxy env.
+6. Applies a repo-owned OTEL sandbox policy preset through `openshell policy set`, including the required `allowed_ips` override for the private service IP plus direct package-install egress for the pinned Node.js and Python OTel bootstrap dependencies.
+7. Restarts `openclaw gateway run` inside the sandbox with `@splunk/otel`, a repo-owned Python `sitecustomize.py`, the host CA bundle if needed, and `OTEL_EXPORTER_OTLP_ENDPOINT` pointed at the in-gateway forwarder service while preserving OpenShell's proxy env.
+8. Covers the NemoClaw Python helper processes under the same `service.name=openclaw`, including a startup span and subprocess spans for the auto-pair watcher launched by `nemoclaw-start`.
+9. Starts the repo-owned host OpenAI relay as a separately instrumented `openai-relay` service that exports to the same local collector, so real gateway traffic can produce an `openclaw -> openai-relay` edge in Splunk APM.
 
 The OpenAI relay exists because some enterprise environments allow the host and the OpenShell gateway container to reach OpenAI while direct `api.openai.com` egress from sandbox pods is blocked. The OTLP forwarder exists because sandbox pods may also be unable to export directly to host ports on `4318` even though the gateway container can.
+
+The local repo intentionally does not instrument the in-gateway OTLP forwarder. In the real local path, the traced services you should expect from repo-managed instrumentation are `openclaw` and `openai-relay`, both tagged with `deployment.environment=nemolaw` by default. The Python helper processes inside the sandbox are instrumented under the existing `openclaw` service, not split into a third service.
+
+The same local collector path now also exports `agent-sandbox-controller` metrics into Splunk under `service.name=agent-sandbox-controller` and `deployment.environment=nemolaw`. Useful live metrics on that endpoint include the controller-runtime series such as `controller_runtime_reconcile_total`, `controller_runtime_reconcile_errors_total`, `controller_runtime_reconcile_time_seconds`, and `controller_runtime_active_workers`. Upstream source also defines `agent_sandbox_claim_creation_total`, `agent_sandbox_creation_latency_ms`, and `agent_sandbox_claim_startup_latency_ms`; those appear once the controller records sandbox lifecycle activity.
+
+The in-gateway OTLP forwarder now reconciles target drift before it returns the print-only endpoint helpers used by bootstrap and restart. If the local collector host port or the gateway-reachable host IP changes, rerunning the local scripts will repoint the forwarder instead of silently reusing the old target.
 
 The local scripts now reject collectors that expose the configured host OTLP port but do not define a `traces` pipeline. This prevents accidental reuse of a metrics-only debug collector that would silently drop NemoClaw telemetry.
 
@@ -301,6 +312,21 @@ scripts/local/emit-test-trace.sh --count 3 --service-name openclaw-manual
 ```
 
 That posts synthetic OTLP traces straight to the local collector host endpoint and prints the `service.name` and `deployment.environment` values to use when filtering in Splunk. The manual emitter defaults to `deployment.environment=nemolaw`.
+
+If you want multiple connected services to appear in the Splunk APM service map for the local `nemolaw` environment beyond the real `openclaw -> openai-relay` edge, run:
+
+```bash
+scripts/local/emit-service-map-demo.sh --count 10
+```
+
+That emits connected traces for these default services:
+
+- `nemoclaw`
+- `nemoclaw-policy`
+- `openclaw`
+- `openai-relay`
+
+All of them use `deployment.environment=nemolaw`, so filter the service map or trace search on that environment and the last 15 minutes. This is synthetic demo traffic, not additional real runtime instrumentation.
 
 If you also want the default stubbed agent smoke through the gateway, add:
 

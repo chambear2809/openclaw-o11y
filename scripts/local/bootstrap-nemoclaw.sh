@@ -17,8 +17,6 @@ require_tool npm
 require_tool curl
 require_tool ssh
 
-require_env OPENAI_API_KEY
-
 run_stub_smoke="false"
 run_real_smoke="false"
 recreate_sandbox="false"
@@ -44,6 +42,10 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "${run_real_smoke}" == "true" ]]; then
+  require_env OPENAI_API_KEY
+fi
 
 docker ps >/dev/null
 
@@ -73,9 +75,11 @@ sandbox_name="${NEMOCLAW_SANDBOX_NAME:-my-assistant}"
 openai_model="$(local_openai_model)"
 stub_smoke_model="$(local_openai_smoke_stub_model)"
 splunk_otel_js_version="$(local_splunk_otel_js_version)"
+splunk_otel_python_version="$(local_splunk_otel_python_version)"
 bootstrap_model="${NEMOCLAW_BOOTSTRAP_MODEL:-${openai_model}}"
-deployment_environment="${OPENCLAW_DEPLOYMENT_ENVIRONMENT:-Openclaw}"
+deployment_environment="$(local_deployment_environment)"
 gateway_name="$(local_openshell_gateway_name)"
+provider_api_key="$(local_openai_provider_api_key)"
 
 echo "Starting stock NemoClaw onboard flow for sandbox ${sandbox_name}"
 env \
@@ -95,15 +99,17 @@ else
 fi
 
 echo "Configuring OpenShell gateway inference for OpenAI"
-openshell provider create -g "${gateway_name}" \
-  --name openai-direct \
-  --type openai \
-  --credential "OPENAI_API_KEY" \
-  --config "OPENAI_BASE_URL=${openai_base_url}" >/dev/null 2>&1 || \
-  openshell provider update -g "${gateway_name}" \
-    openai-direct \
+env OPENAI_API_KEY="${provider_api_key}" \
+  openshell provider create -g "${gateway_name}" \
+    --name openai-direct \
+    --type openai \
     --credential "OPENAI_API_KEY" \
-    --config "OPENAI_BASE_URL=${openai_base_url}" >/dev/null
+    --config "OPENAI_BASE_URL=${openai_base_url}" >/dev/null 2>&1 || \
+  env OPENAI_API_KEY="${provider_api_key}" \
+    openshell provider update -g "${gateway_name}" \
+      openai-direct \
+      --credential "OPENAI_API_KEY" \
+      --config "OPENAI_BASE_URL=${openai_base_url}" >/dev/null
 set_openai_direct_inference_model "${openai_model}" "${gateway_name}"
 
 collector_endpoint="$("${SCRIPT_DIR}/ensure-gateway-otlp-forwarder.sh" --print-endpoint)"
@@ -111,6 +117,7 @@ collector_forwarder_cluster_ip="$("${SCRIPT_DIR}/ensure-gateway-otlp-forwarder.s
 collector_forwarder_http_port="$(local_gateway_otel_forwarder_http_port)"
 collector_forwarder_service_host="$(local_gateway_otel_forwarder_service_host)"
 collector_forwarder_service_fqdn="$(local_gateway_otel_forwarder_service_fqdn)"
+collector_host_endpoint="$("${SCRIPT_DIR}/ensure-collector.sh" --print-host-endpoint)"
 
 echo "Applying OTEL collector policy preset"
 preset_file="$(mktemp)"
@@ -123,77 +130,20 @@ sed \
 node "${SCRIPT_DIR}/apply-policy-preset.js" "${sandbox_name}" "${preset_file}"
 rm -f "${preset_file}"
 
+echo "Preparing pinned Splunk OTel Python bootstrap inside the sandbox"
+ensure_sandbox_python_otel_packages "${sandbox_name}" "${splunk_otel_python_version}" "${extra_ca_b64}" >/dev/null
+
 instrument_script="$(mktemp)"
-cat > "${instrument_script}" <<EOF
-set -euo pipefail
-command -v stty >/dev/null 2>&1 && stty -echo || true
+write_sandbox_otel_restart_script \
+  "${instrument_script}" \
+  "${splunk_otel_js_version}" \
+  "${splunk_otel_python_version}" \
+  "${extra_ca_b64}" \
+  "${deployment_environment}" \
+  "${sandbox_name}" \
+  "${collector_endpoint}"
 
-export NPM_CONFIG_PREFIX="\$HOME/.npm-global"
-mkdir -p "\${NPM_CONFIG_PREFIX}"
-
-npm_root="\$(npm root -g)"
-desired_otel_version="${splunk_otel_js_version}"
-current_otel_version="$(node -e 'try { process.stdout.write(require(process.argv[1]).version); } catch (error) { process.exit(1); }' "\${npm_root}/@splunk/otel/package.json" 2>/dev/null || true)"
-if [ "\${current_otel_version}" != "\${desired_otel_version}" ]; then
-  npm install -g "@splunk/otel@\${desired_otel_version}" >/tmp/otel-install.log 2>&1
-fi
-
-npm_root="\$(npm root -g)"
-instrument_path="\${npm_root}/@splunk/otel/instrument.js"
-if [ ! -e "\${instrument_path}" ]; then
-  echo "Missing OTEL bootstrap at \${instrument_path}" >&2
-  exit 1
-fi
-
-node_extra_certs_file="/etc/openshell-tls/openshell-ca.pem"
-if [ -n "${extra_ca_b64}" ]; then
-  cat > /tmp/openclaw-host-extra-ca.b64 <<'CERT'
-${extra_ca_b64}
-CERT
-  if base64 --decode >/dev/null 2>&1 <<<""; then
-    base64 --decode /tmp/openclaw-host-extra-ca.b64 > /tmp/openclaw-host-extra-ca.pem
-  else
-    base64 -d /tmp/openclaw-host-extra-ca.b64 > /tmp/openclaw-host-extra-ca.pem
-  fi
-  cat /etc/openshell-tls/openshell-ca.pem /tmp/openclaw-host-extra-ca.pem > /tmp/openclaw-node-extra-ca.pem
-  chmod 600 /tmp/openclaw-node-extra-ca.pem
-  node_extra_certs_file="/tmp/openclaw-node-extra-ca.pem"
-fi
-
-gateway_pid="\$(ss -ltnp '( sport = :18789 )' 2>/dev/null | awk -F'pid=' 'NR>1 && NF>1 {split(\$2, parts, ","); print parts[1]; exit}')"
-if [ -n "\${gateway_pid}" ]; then
-  kill "\${gateway_pid}" >/dev/null 2>&1 || true
-  sleep 2
-fi
-
-node_opts="--require \${instrument_path}"
-if [ -n "${OPENCLAW_NODE_OPTIONS_BASE:-}" ]; then
-  node_opts="${OPENCLAW_NODE_OPTIONS_BASE:-} \${node_opts}"
-fi
-
-nohup env \\
-  OTEL_SERVICE_NAME="openclaw" \\
-  OTEL_RESOURCE_ATTRIBUTES="deployment.environment=${deployment_environment},demo.runtime=nemoclaw-local,sandbox.name=${sandbox_name}" \\
-  OTEL_TRACES_EXPORTER="otlp" \\
-  OTEL_METRICS_EXPORTER="none" \\
-  OTEL_LOGS_EXPORTER="none" \\
-  OTEL_EXPORTER_OTLP_ENDPOINT="${collector_endpoint}" \\
-  OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf" \\
-  OTEL_PROPAGATORS="tracecontext,baggage" \\
-  SPLUNK_TRACE_RESPONSE_HEADER_ENABLED="false" \\
-  NODE_EXTRA_CA_CERTS="\${node_extra_certs_file}" \\
-  SSL_CERT_FILE="\${node_extra_certs_file}" \\
-  REQUESTS_CA_BUNDLE="\${node_extra_certs_file}" \\
-  CURL_CA_BUNDLE="\${node_extra_certs_file}" \\
-  NODE_OPTIONS="\${node_opts}" \\
-  nemoclaw-start >/tmp/nemoclaw-otel-start.log 2>&1 &
-
-sleep 4
-ss -ltn '( sport = :18789 )' | grep -q ':18789'
-echo "sandbox gateway restarted with OTEL"
-EOF
-
-echo "Installing Splunk OTel JS and restarting the sandbox gateway under instrumentation"
+echo "Installing Splunk OTel JS/Python and restarting the sandbox gateway under instrumentation"
 run_sandbox_script "${sandbox_name}" "${instrument_script}"
 rm -f "${instrument_script}"
 

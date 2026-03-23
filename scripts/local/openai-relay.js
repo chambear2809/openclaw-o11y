@@ -287,7 +287,10 @@ const server = http.createServer(async (req, res) => {
         upstreamBase,
         smokeStubModel,
         defaultApiKeyConfigured: defaultApiKey !== "",
-        relayVersion: 3,
+        otelServiceName: process.env.OTEL_SERVICE_NAME || "",
+        otelExporterEndpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "",
+        deploymentEnvironment: process.env.OPENCLAW_DEPLOYMENT_ENVIRONMENT || process.env.DEPLOYMENT_ENVIRONMENT || "",
+        relayVersion: 4,
       });
       return;
     }

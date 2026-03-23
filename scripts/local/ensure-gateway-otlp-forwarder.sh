@@ -31,6 +31,24 @@ forwarder_cluster_ip() {
     "kubectl get svc ${forwarder_name} -n ${forwarder_namespace} -o jsonpath='{.spec.clusterIP}'" 2>/dev/null || true
 }
 
+forwarder_config() {
+  local gateway_container="$1"
+  local forwarder_name="$2"
+  local forwarder_namespace="$3"
+
+  docker exec "${gateway_container}" sh -lc \
+    "kubectl get configmap ${forwarder_name} -n ${forwarder_namespace} -o jsonpath='{.data.otelcol\\.yaml}'" 2>/dev/null || true
+}
+
+forwarder_image() {
+  local gateway_container="$1"
+  local forwarder_name="$2"
+  local forwarder_namespace="$3"
+
+  docker exec "${gateway_container}" sh -lc \
+    "kubectl get deploy ${forwarder_name} -n ${forwarder_namespace} -o jsonpath='{.spec.template.spec.containers[0].image}'" 2>/dev/null || true
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --print-endpoint)
@@ -67,8 +85,19 @@ forwarder_target_endpoint="http://$(format_host_for_url "$(resolve_gateway_host_
 forwarder_endpoint="$(local_gateway_otel_forwarder_endpoint)"
 existing_forwarder_cluster_ip="$(forwarder_cluster_ip "${gateway_container}" "${forwarder_name}" "${forwarder_namespace}")"
 existing_forwarder_ready="$(forwarder_ready_replicas "${gateway_container}" "${forwarder_name}" "${forwarder_namespace}")"
+existing_forwarder_config="$(forwarder_config "${gateway_container}" "${forwarder_name}" "${forwarder_namespace}")"
+existing_forwarder_image="$(forwarder_image "${gateway_container}" "${forwarder_name}" "${forwarder_namespace}")"
+forwarder_matches_desired="false"
 
-if [[ ("${print_only}" == "true" || "${print_cluster_ip_only}" == "true") && -n "${existing_forwarder_cluster_ip}" && "${existing_forwarder_cluster_ip}" != "None" && -n "${existing_forwarder_ready}" && "${existing_forwarder_ready}" != "0" ]]; then
+if [[ -n "${existing_forwarder_cluster_ip}" && "${existing_forwarder_cluster_ip}" != "None" && -n "${existing_forwarder_ready}" && "${existing_forwarder_ready}" != "0" && -n "${existing_forwarder_config}" && "${existing_forwarder_image}" == "${forwarder_image}" ]]; then
+  if printf '%s\n' "${existing_forwarder_config}" | grep -Fq "endpoint: ${forwarder_target_endpoint}" && \
+     printf '%s\n' "${existing_forwarder_config}" | grep -Fq "endpoint: 0.0.0.0:${forwarder_host_port}" && \
+     printf '%s\n' "${existing_forwarder_config}" | grep -Fq "endpoint: 0.0.0.0:${forwarder_health_port}"; then
+    forwarder_matches_desired="true"
+  fi
+fi
+
+if [[ ("${print_only}" == "true" || "${print_cluster_ip_only}" == "true") && "${forwarder_matches_desired}" == "true" ]]; then
   if [[ "${print_only}" == "true" ]]; then
     printf '%s\n' "${forwarder_endpoint}"
     exit 0

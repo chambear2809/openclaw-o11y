@@ -1,3 +1,5 @@
 .DS_Store
+__pycache__/
+*.py[cod]
 scripts/k8s/lab.env
 scripts/local/lab.env

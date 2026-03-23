@@ -55,6 +55,12 @@ read_local_otel_collector_config() {
   local config_path=""
   local config=""
 
+  config="$(docker exec "${container_name}" sh -lc 'if [ -n "${SPLUNK_CONFIG_YAML:-}" ]; then printf "%s\n" "$SPLUNK_CONFIG_YAML"; fi' 2>/dev/null || true)"
+  if [[ -n "${config}" ]]; then
+    printf '%s\n' "${config}"
+    return 0
+  fi
+
   while IFS= read -r config_path; do
     [[ -n "${config_path}" ]] || continue
     config="$(docker exec "${container_name}" sh -lc "if [ -f '${config_path}' ]; then cat '${config_path}'; fi" 2>/dev/null || true)"
@@ -74,6 +80,37 @@ local_otel_collector_supports_traces() {
   config="$(read_local_otel_collector_config "${container_name}" 2>/dev/null || true)"
   [[ -n "${config}" ]] || return 1
   printf '%s\n' "${config}" | grep -Eq '^[[:space:]]*traces:([[:space:]]|$)'
+}
+
+local_otel_collector_supports_metrics() {
+  local container_name="$1"
+  local config=""
+
+  config="$(read_local_otel_collector_config "${container_name}" 2>/dev/null || true)"
+  [[ -n "${config}" ]] || return 1
+  printf '%s\n' "${config}" | grep -Eq '^[[:space:]]*metrics(/[^:]+)?:([[:space:]]|$)'
+}
+
+local_otel_collector_supports_agent_sandbox_metrics() {
+  local container_name="$1"
+  local scrape_target="$2"
+  local config=""
+
+  config="$(read_local_otel_collector_config "${container_name}" 2>/dev/null || true)"
+  [[ -n "${config}" ]] || return 1
+  printf '%s\n' "${config}" | grep -Fq 'job_name: agent-sandbox-controller' || return 1
+  if printf '%s\n' "${config}" | grep -Fq "${scrape_target}"; then
+    return 0
+  fi
+  printf '%s\n' "${config}" | grep -Fq '${OPENCLAW_AGENT_SANDBOX_METRICS_TARGET}'
+}
+
+docker_container_env_value() {
+  local container_name="$1"
+  local env_name="$2"
+
+  docker inspect "${container_name}" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | \
+    awk -F= -v env_name="${env_name}" '$1 == env_name {print substr($0, index($0, "=") + 1); exit}'
 }
 
 local_collector_host_port() {
@@ -180,8 +217,49 @@ local_splunk_otel_js_version() {
   printf '%s\n' "${LOCAL_SPLUNK_OTEL_JS_VERSION:-4.0.0}"
 }
 
+local_splunk_otel_python_version() {
+  printf '%s\n' "${LOCAL_SPLUNK_OTEL_PYTHON_VERSION:-2.9.0}"
+}
+
+local_deployment_environment() {
+  printf '%s\n' "${OPENCLAW_DEPLOYMENT_ENVIRONMENT:-nemolaw}"
+}
+
+local_agent_sandbox_namespace() {
+  printf '%s\n' "${LOCAL_AGENT_SANDBOX_NAMESPACE:-agent-sandbox-system}"
+}
+
+local_agent_sandbox_controller_service_name() {
+  printf '%s\n' "${LOCAL_AGENT_SANDBOX_CONTROLLER_SERVICE_NAME:-agent-sandbox-controller}"
+}
+
+local_agent_sandbox_metrics_bridge_port() {
+  printf '%s\n' "${LOCAL_AGENT_SANDBOX_METRICS_BRIDGE_PORT:-19090}"
+}
+
+local_agent_sandbox_metrics_service_name() {
+  printf '%s\n' "${LOCAL_AGENT_SANDBOX_METRICS_SERVICE_NAME:-agent-sandbox-controller}"
+}
+
+local_openai_relay_service_name() {
+  printf '%s\n' "${LOCAL_OPENAI_RELAY_SERVICE_NAME:-openai-relay}"
+}
+
+local_openai_provider_api_key() {
+  if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+    printf '%s\n' "${OPENAI_API_KEY}"
+    return 0
+  fi
+
+  printf '%s\n' "${LOCAL_OPENAI_STUB_API_KEY:-openclaw-local-stub-key}"
+}
+
 gateway_container_name() {
   printf 'openshell-cluster-%s\n' "$(local_openshell_gateway_name)"
+}
+
+local_agent_sandbox_metrics_target() {
+  printf '%s:%s\n' "$(gateway_container_name)" "$(local_agent_sandbox_metrics_bridge_port)"
 }
 
 local_gateway_host_alias_candidates() {
@@ -318,6 +396,223 @@ run_sandbox_script() {
   return "${exit_code}"
 }
 
+run_sandbox_kubectl_script() {
+  local sandbox_name="$1"
+  local script_file="$2"
+  local gateway_container=""
+
+  gateway_container="$(gateway_container_name)"
+  docker exec -i "${gateway_container}" sh -lc "kubectl exec -i -n openshell ${sandbox_name} -- bash -s" < "${script_file}"
+}
+
+ensure_sandbox_python_otel_packages() {
+  local sandbox_name="$1"
+  local splunk_otel_python_version="$2"
+  local extra_ca_b64="$3"
+  local install_script=""
+  local output=""
+
+  install_script="$(mktemp)"
+  cat > "${install_script}" <<EOF
+set -euo pipefail
+
+node_extra_certs_file="/etc/openshell-tls/openshell-ca.pem"
+python_install_ca_file=""
+if [ -n "${extra_ca_b64}" ]; then
+  cat > /tmp/openclaw-host-extra-ca.b64 <<'CERT'
+${extra_ca_b64}
+CERT
+  if base64 --decode >/dev/null 2>&1 <<<""; then
+    base64 --decode /tmp/openclaw-host-extra-ca.b64 > /tmp/openclaw-host-extra-ca.pem
+  else
+    base64 -d /tmp/openclaw-host-extra-ca.b64 > /tmp/openclaw-host-extra-ca.pem
+  fi
+  cat /etc/openshell-tls/openshell-ca.pem /tmp/openclaw-host-extra-ca.pem > /tmp/openclaw-node-extra-ca.pem
+  chmod 600 /tmp/openclaw-node-extra-ca.pem
+  node_extra_certs_file="/tmp/openclaw-node-extra-ca.pem"
+fi
+
+python_install_ca_file="\${node_extra_certs_file}"
+if [ -f "/etc/ssl/certs/ca-certificates.crt" ]; then
+  cat /etc/ssl/certs/ca-certificates.crt "\${node_extra_certs_file}" > /tmp/openclaw-python-otel-install-ca.pem
+  chmod 600 /tmp/openclaw-python-otel-install-ca.pem
+  python_install_ca_file="/tmp/openclaw-python-otel-install-ca.pem"
+fi
+
+python_otel_packages_dir="/tmp/openclaw-python-otel/site-packages"
+desired_python_otel_version="${splunk_otel_python_version}"
+current_python_otel_version="\$(PYTHONPATH="\${python_otel_packages_dir}" python3 - <<'PY'
+try:
+    from splunk_otel.__about__ import __version__
+except Exception:
+    print("")
+else:
+    print(__version__)
+PY
+)"
+
+if [ "\${current_python_otel_version}" != "\${desired_python_otel_version}" ]; then
+  rm -rf "\${python_otel_packages_dir}"
+  mkdir -p "\${python_otel_packages_dir}"
+  env \\
+    HTTP_PROXY="" \\
+    HTTPS_PROXY="" \\
+    ALL_PROXY="" \\
+    http_proxy="" \\
+    https_proxy="" \\
+    all_proxy="" \\
+    grpc_proxy="" \\
+    NO_PROXY="" \\
+    no_proxy="" \\
+    PIP_CERT="\${python_install_ca_file}" \\
+    python3 -m pip install --no-input --disable-pip-version-check --target "\${python_otel_packages_dir}" "splunk-opentelemetry==\${desired_python_otel_version}" >/tmp/openclaw-python-otel-install.log 2>&1 || {
+      cat /tmp/openclaw-python-otel-install.log >&2
+      exit 1
+    }
+fi
+
+[ -e "\${python_otel_packages_dir}/splunk_otel/__init__.py" ] || {
+  echo "Missing Python OTEL bootstrap at \${python_otel_packages_dir}/splunk_otel/__init__.py" >&2
+  exit 1
+}
+
+echo "sandbox python otel ready"
+EOF
+
+  if output="$(run_sandbox_kubectl_script "${sandbox_name}" "${install_script}")"; then
+    :
+  else
+    rm -f "${install_script}"
+    return 1
+  fi
+
+  rm -f "${install_script}"
+  printf '%s\n' "${output}"
+}
+
+write_sandbox_otel_restart_script() {
+  local output_path="$1"
+  local splunk_otel_js_version="$2"
+  local splunk_otel_python_version="$3"
+  local extra_ca_b64="$4"
+  local deployment_environment="$5"
+  local sandbox_name="$6"
+  local collector_endpoint="$7"
+  local python_sitecustomize_source="${SCRIPT_DIR}/python-sitecustomize.py"
+
+  [[ -f "${python_sitecustomize_source}" ]] || {
+    echo "Missing Python OTEL bootstrap source: ${python_sitecustomize_source}" >&2
+    return 1
+  }
+
+  cat > "${output_path}" <<EOF
+set -euo pipefail
+command -v stty >/dev/null 2>&1 && stty -echo || true
+
+node_extra_certs_file="/etc/openshell-tls/openshell-ca.pem"
+if [ -n "${extra_ca_b64}" ]; then
+  cat > /tmp/openclaw-host-extra-ca.b64 <<'CERT'
+${extra_ca_b64}
+CERT
+  if base64 --decode >/dev/null 2>&1 <<<""; then
+    base64 --decode /tmp/openclaw-host-extra-ca.b64 > /tmp/openclaw-host-extra-ca.pem
+  else
+    base64 -d /tmp/openclaw-host-extra-ca.b64 > /tmp/openclaw-host-extra-ca.pem
+  fi
+  cat /etc/openshell-tls/openshell-ca.pem /tmp/openclaw-host-extra-ca.pem > /tmp/openclaw-node-extra-ca.pem
+  chmod 600 /tmp/openclaw-node-extra-ca.pem
+  node_extra_certs_file="/tmp/openclaw-node-extra-ca.pem"
+fi
+
+export NPM_CONFIG_PREFIX="\$HOME/.npm-global"
+mkdir -p "\${NPM_CONFIG_PREFIX}"
+
+npm_root="\$(npm root -g)"
+desired_otel_version="${splunk_otel_js_version}"
+current_otel_version="\$(node -e 'try { process.stdout.write(require(process.argv[1]).version); } catch (error) { process.exit(1); }' "\${npm_root}/@splunk/otel/package.json" 2>/dev/null || true)"
+if [ "\${current_otel_version}" != "\${desired_otel_version}" ]; then
+  npm install -g "@splunk/otel@\${desired_otel_version}" >/tmp/otel-install.log 2>&1
+fi
+
+npm_root="\$(npm root -g)"
+instrument_path="\${npm_root}/@splunk/otel/instrument.js"
+if [ ! -e "\${instrument_path}" ]; then
+  echo "Missing OTEL bootstrap at \${instrument_path}" >&2
+  exit 1
+fi
+
+python_otel_root="/tmp/openclaw-python-otel"
+python_otel_packages_dir="\${python_otel_root}/site-packages"
+python_otel_bootstrap_dir="\${python_otel_root}/bootstrap"
+python_otel_marker_file="/tmp/openclaw-python-otel.marker.log"
+desired_python_otel_version="${splunk_otel_python_version}"
+current_python_otel_version="\$(PYTHONPATH="\${python_otel_packages_dir}" python3 - <<'PY'
+try:
+    from splunk_otel.__about__ import __version__
+except Exception:
+    print("")
+else:
+    print(__version__)
+PY
+)"
+if [ "\${current_python_otel_version}" != "\${desired_python_otel_version}" ] || [ ! -e "\${python_otel_packages_dir}/splunk_otel/__init__.py" ]; then
+  echo "Python OTEL bootstrap version \${desired_python_otel_version} is not prepared in \${python_otel_packages_dir}" >&2
+  exit 1
+fi
+
+mkdir -p "\${python_otel_bootstrap_dir}"
+cat > "\${python_otel_bootstrap_dir}/sitecustomize.py" <<'PYOTEL'
+EOF
+  cat "${python_sitecustomize_source}" >> "${output_path}"
+  cat >> "${output_path}" <<EOF
+PYOTEL
+chmod 0644 "\${python_otel_bootstrap_dir}/sitecustomize.py"
+rm -f "\${python_otel_marker_file}"
+
+gateway_pid="\$(ss -ltnp '( sport = :18789 )' 2>/dev/null | awk -F'pid=' 'NR>1 && NF>1 {split(\$2, parts, ","); print parts[1]; exit}')"
+if [ -n "\${gateway_pid}" ]; then
+  kill "\${gateway_pid}" >/dev/null 2>&1 || true
+  sleep 2
+fi
+
+node_opts="--require \${instrument_path}"
+if [ -n "${OPENCLAW_NODE_OPTIONS_BASE:-}" ]; then
+  node_opts="${OPENCLAW_NODE_OPTIONS_BASE:-} \${node_opts}"
+fi
+
+python_path="\${python_otel_bootstrap_dir}:\${python_otel_packages_dir}"
+if [ -n "\${PYTHONPATH:-}" ]; then
+  python_path="\${python_path}:\${PYTHONPATH}"
+fi
+
+nohup env \\
+  OTEL_SERVICE_NAME="openclaw" \\
+  OTEL_RESOURCE_ATTRIBUTES="deployment.environment=${deployment_environment},demo.runtime=nemoclaw-local,sandbox.name=${sandbox_name}" \\
+  OTEL_TRACES_EXPORTER="otlp" \\
+  OTEL_METRICS_EXPORTER="none" \\
+  OTEL_LOGS_EXPORTER="none" \\
+  OTEL_EXPORTER_OTLP_ENDPOINT="${collector_endpoint}" \\
+  OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf" \\
+  OTEL_PROPAGATORS="tracecontext,baggage" \\
+  SPLUNK_TRACE_RESPONSE_HEADER_ENABLED="false" \\
+  OPENCLAW_PYTHON_OTEL_BOOTSTRAP="1" \\
+  OPENCLAW_PYTHON_OTEL_VERSION="\${desired_python_otel_version}" \\
+  OPENCLAW_PYTHON_OTEL_MARKER_FILE="\${python_otel_marker_file}" \\
+  NODE_EXTRA_CA_CERTS="\${node_extra_certs_file}" \\
+  SSL_CERT_FILE="\${node_extra_certs_file}" \\
+  REQUESTS_CA_BUNDLE="\${node_extra_certs_file}" \\
+  CURL_CA_BUNDLE="\${node_extra_certs_file}" \\
+  PIP_CERT="\${node_extra_certs_file}" \\
+  PYTHONPATH="\${python_path}" \\
+  NODE_OPTIONS="\${node_opts}" \\
+  nemoclaw-start >/tmp/nemoclaw-otel-start.log 2>&1 &
+
+sleep 4
+ss -ltn '( sport = :18789 )' | grep -q ':18789'
+echo "sandbox gateway restarted with OTEL"
+EOF
+}
+
 set_openai_direct_inference_model() {
   local model="$1"
   local gateway_name="${2:-$(local_openshell_gateway_name)}"
@@ -364,15 +659,37 @@ run_openclaw_smoke_agent_with_model() {
   local session_id="${4:-o11y-smoke}"
   local gateway_name="${5:-$(local_openshell_gateway_name)}"
   local smoke_output=""
+  local restore_status_file=""
+  local restore_status=""
   local exit_code=0
 
-  set_openai_direct_inference_model "${smoke_model}" "${gateway_name}"
-  if smoke_output="$(run_openclaw_smoke_agent "${sandbox_name}" "${session_id}")"; then
+  restore_status_file="$(mktemp)"
+  if smoke_output="$(
+    (
+      restore_gateway_model() {
+        if set_openai_direct_inference_model "${restore_model}" "${gateway_name}" >/dev/null 2>&1; then
+          printf '0\n' > "${restore_status_file}"
+        else
+          printf '%s\n' "$?" > "${restore_status_file}"
+        fi
+      }
+
+      trap 'restore_gateway_model' EXIT INT TERM HUP
+      set_openai_direct_inference_model "${smoke_model}" "${gateway_name}"
+      run_openclaw_smoke_agent "${sandbox_name}" "${session_id}"
+    )
+  )"; then
     exit_code=0
   else
     exit_code=$?
   fi
-  set_openai_direct_inference_model "${restore_model}" "${gateway_name}"
+
+  restore_status="$(cat "${restore_status_file}" 2>/dev/null || true)"
+  rm -f "${restore_status_file}"
+  if [[ -z "${restore_status}" || "${restore_status}" != "0" ]]; then
+    echo "Failed to restore OpenShell inference model ${restore_model} after stub smoke." >&2
+    return 1
+  fi
 
   [[ "${exit_code}" -eq 0 ]] || return "${exit_code}"
   printf '%s\n' "${smoke_output}"

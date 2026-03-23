@@ -13,6 +13,21 @@ network_policies:
       - { path: /usr/local/bin/npm }
       - { path: /usr/local/bin/node }
 
+  python_package_index:
+    name: python_package_index
+    endpoints:
+      - host: pypi.org
+        port: 443
+        access: full
+      - host: files.pythonhosted.org
+        port: 443
+        access: full
+    binaries:
+      - { path: /usr/bin/python3 }
+      - { path: /usr/local/bin/python3 }
+      - { path: /usr/bin/pip3 }
+      - { path: /usr/local/bin/pip3 }
+
   otel_forwarder:
     name: otel_forwarder
     endpoints:
