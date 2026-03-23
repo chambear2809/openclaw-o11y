@@ -29,8 +29,9 @@ flowchart TB
     K8sDemo[Synthetic OpenShell-shaped control-plane telemetry]
     K8sCollector[Splunk OTel Collector components]
 
-    User -->|real gateway traffic| K8sSvc --> K8sPod
-    K8sOp -. injects Node.js auto-instrumentation .-> K8sPod
+    User -->|real gateway traffic| K8sSvc
+    K8sSvc --> K8sPod
+    K8sOp -.-> K8sPod
     K8sPod -->|real runtime traces| K8sCollector
     K8sDemo -->|synthetic traces, metrics, logs| K8sCollector
   end
@@ -44,10 +45,12 @@ flowchart TB
     Forwarder[In-gateway OTLP forwarder]
     LocalCollector[Host-local OTEL collector]
 
-    LocalBootstrap -. bootstraps and configures .-> Gateway
+    LocalBootstrap -.-> Gateway
     Gateway --> Sandbox
-    Gateway -->|provider traffic| Relay --> OpenAI
-    Sandbox -->|real OTLP telemetry| Forwarder --> LocalCollector
+    Gateway -->|provider traffic| Relay
+    Relay --> OpenAI
+    Sandbox -->|real OTLP telemetry| Forwarder
+    Forwarder --> LocalCollector
     Relay -->|real relay telemetry| LocalCollector
   end
 
@@ -82,17 +85,18 @@ flowchart LR
       ClusterReceiver[Cluster receiver]
     end
 
-    User -->|HTTP 18789| Svc --> Pod
-    Operator -. manages admission webhook .-> Instr
-    Instr -. selected by the pod template inject-nodejs annotation .-> Pod
+    User -->|HTTP 18789| Svc
+    Svc --> Pod
+    Operator -.-> Instr
+    Instr -.-> Pod
     Pod -->|real OpenClaw traces| Agent
     ClusterReceiver -->|k8s infra telemetry| Splunk
     Demo -->|synthetic control-plane traces, metrics, logs| Agent
   end
 
-  DeployLab[scripts/k8s/deploy-lab.sh] -. installs or reuses Splunk OTel and deploys OpenClaw .-> Operator
-  DeployLab -. renders and applies deployment .-> Pod
-  DemoScenarios[scripts/k8s/demo-scenarios.sh] -. triggers remote demo emitter .-> Demo
+  DeployLab[scripts/k8s/deploy-lab.sh] -.-> Operator
+  DeployLab -.-> Pod
+  DemoScenarios[scripts/k8s/demo-scenarios.sh] -.-> Demo
 
   Agent --> Splunk
 ```
@@ -127,16 +131,18 @@ flowchart LR
     Forwarder[openclaw-otlp-forwarder service]
   end
 
-  User -->|UI or agent traffic| Gateway --> Sandbox
-  Gateway -->|OpenAI-compatible provider calls| Relay --> OpenAI
-  Sandbox -->|OTLP HTTP via proxy| Forwarder --> Collector
+  User -->|UI or agent traffic| Gateway
+  Gateway --> Sandbox
+  Gateway -->|OpenAI-compatible provider calls| Relay
+  Relay --> OpenAI
+  Sandbox -->|OTLP HTTP via proxy| Forwarder
+  Forwarder --> Collector
   Relay -->|relay service telemetry| Collector
   Collector --> Splunk
 
-  Bootstrap -. runs stock NemoClaw onboard flow .-> Gateway
-  Bootstrap -. configures openai-direct and gateway model .-> Gateway
-  Bootstrap -. deploys OTLP forwarder and policy preset .-> Forwarder
-  Bootstrap -. restarts sandboxed OpenClaw under Splunk OTel .-> Sandbox
+  Bootstrap -.-> Gateway
+  Bootstrap -.-> Forwarder
+  Bootstrap -.-> Sandbox
 ```
 
 Key points for this path:
