@@ -42,6 +42,7 @@ sandbox_name="${NEMOCLAW_SANDBOX_NAME:-my-assistant}"
 collector_host_endpoint="$("${SCRIPT_DIR}/ensure-collector.sh" --print-host-endpoint)"
 openai_model="$(local_openai_model)"
 stub_smoke_model="$(local_openai_smoke_stub_model)"
+splunk_otel_js_version="$(local_splunk_otel_js_version)"
 deployment_environment="${OPENCLAW_DEPLOYMENT_ENVIRONMENT:-Openclaw}"
 gateway_name="$(local_openshell_gateway_name)"
 extra_ca_pem="$(resolve_host_extra_ca_pem || true)"
@@ -92,8 +93,11 @@ command -v stty >/dev/null 2>&1 && stty -echo || true
 export NPM_CONFIG_PREFIX="\$HOME/.npm-global"
 mkdir -p "\${NPM_CONFIG_PREFIX}"
 
-if ! npm list -g @splunk/otel >/dev/null 2>&1; then
-  npm install -g @splunk/otel >/tmp/otel-install.log 2>&1
+npm_root="\$(npm root -g)"
+desired_otel_version="${splunk_otel_js_version}"
+current_otel_version="$(node -e 'try { process.stdout.write(require(process.argv[1]).version); } catch (error) { process.exit(1); }' "\${npm_root}/@splunk/otel/package.json" 2>/dev/null || true)"
+if [ "\${current_otel_version}" != "\${desired_otel_version}" ]; then
+  npm install -g "@splunk/otel@\${desired_otel_version}" >/tmp/otel-install.log 2>&1
 fi
 
 npm_root="\$(npm root -g)"

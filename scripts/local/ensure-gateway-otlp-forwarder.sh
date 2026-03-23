@@ -13,6 +13,24 @@ require_tool docker
 print_only="false"
 print_cluster_ip_only="false"
 
+forwarder_ready_replicas() {
+  local gateway_container="$1"
+  local forwarder_name="$2"
+  local forwarder_namespace="$3"
+
+  docker exec "${gateway_container}" sh -lc \
+    "kubectl get deploy ${forwarder_name} -n ${forwarder_namespace} -o jsonpath='{.status.readyReplicas}'" 2>/dev/null || true
+}
+
+forwarder_cluster_ip() {
+  local gateway_container="$1"
+  local forwarder_name="$2"
+  local forwarder_namespace="$3"
+
+  docker exec "${gateway_container}" sh -lc \
+    "kubectl get svc ${forwarder_name} -n ${forwarder_namespace} -o jsonpath='{.spec.clusterIP}'" 2>/dev/null || true
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --print-endpoint)
@@ -46,6 +64,19 @@ forwarder_host_port="$(local_gateway_otel_forwarder_host_port)"
 forwarder_health_port="$(local_gateway_otel_forwarder_health_port)"
 forwarder_image="$(local_gateway_otel_forwarder_image)"
 forwarder_target_endpoint="http://$(format_host_for_url "$(resolve_gateway_host_ip)")":$(local_collector_host_port)
+forwarder_endpoint="$(local_gateway_otel_forwarder_endpoint)"
+existing_forwarder_cluster_ip="$(forwarder_cluster_ip "${gateway_container}" "${forwarder_name}" "${forwarder_namespace}")"
+existing_forwarder_ready="$(forwarder_ready_replicas "${gateway_container}" "${forwarder_name}" "${forwarder_namespace}")"
+
+if [[ ("${print_only}" == "true" || "${print_cluster_ip_only}" == "true") && -n "${existing_forwarder_cluster_ip}" && "${existing_forwarder_cluster_ip}" != "None" && -n "${existing_forwarder_ready}" && "${existing_forwarder_ready}" != "0" ]]; then
+  if [[ "${print_only}" == "true" ]]; then
+    printf '%s\n' "${forwarder_endpoint}"
+    exit 0
+  fi
+
+  printf '%s\n' "${existing_forwarder_cluster_ip}"
+  exit 0
+fi
 
 manifest_file="$(mktemp)"
 sed \
@@ -64,14 +95,11 @@ rm -f "${manifest_file}"
 docker exec "${gateway_container}" sh -lc \
   "kubectl rollout status deployment/${forwarder_name} -n ${forwarder_namespace} --timeout=120s" >/dev/null
 
-forwarder_cluster_ip="$(docker exec "${gateway_container}" sh -lc \
-  "kubectl get svc ${forwarder_name} -n ${forwarder_namespace} -o jsonpath='{.spec.clusterIP}'")"
+forwarder_cluster_ip="$(forwarder_cluster_ip "${gateway_container}" "${forwarder_name}" "${forwarder_namespace}")"
 if [[ -z "${forwarder_cluster_ip}" || "${forwarder_cluster_ip}" == "None" ]]; then
   echo "Failed to resolve ClusterIP for forwarder service ${forwarder_name}." >&2
   exit 1
 fi
-
-forwarder_endpoint="$(local_gateway_otel_forwarder_endpoint)"
 
 if [[ "${print_only}" == "true" ]]; then
   printf '%s\n' "${forwarder_endpoint}"

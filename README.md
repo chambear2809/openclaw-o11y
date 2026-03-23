@@ -237,6 +237,7 @@ cp scripts/local/lab.env.example scripts/local/lab.env
 2. Set `OPENAI_API_KEY`.
    If your machine sits behind a TLS interception proxy, also set `LOCAL_EXTRA_CA_FILE` or `LOCAL_EXTRA_CA_COMMON_NAME`.
    The repo-managed local OTEL collector now uses that same extra CA material for outbound TLS to Splunk ingest.
+   The repo also pins the local sandbox install of `@splunk/otel` through `LOCAL_SPLUNK_OTEL_JS_VERSION`, default `4.0.0`, so reruns do not silently drift with npm.
    Leave `NEMOCLAW_REF` at the pinned default unless you intentionally want to validate against a newer upstream commit.
 
 3. If you already have a local OTEL collector in Docker exposing the configured host OTLP port, default `4318`, nothing else is required.
@@ -264,6 +265,8 @@ The OpenAI relay exists because some enterprise environments allow the host and 
 The local scripts now reject collectors that expose the configured host OTLP port but do not define a `traces` pipeline. This prevents accidental reuse of a metrics-only debug collector that would silently drop NemoClaw telemetry.
 
 `--smoke` is now the default deterministic smoke path. It temporarily switches the gateway inference model to the repo-local stub model `openclaw-smoke-stub`, runs a real `openclaw agent` request through the OpenShell gateway, and restores the normal model afterward. This keeps OTEL verification independent of OpenAI quota and rate limits.
+
+`scripts/local/verify-nemoclaw-otel.sh` can now reuse or start the local relay even when `OPENAI_API_KEY` is unset, as long as you are only validating the stubbed local path or a caller-supplied Authorization header. The secondary real-provider smoke still needs a working upstream credential.
 
 If you re-run the script against an existing sandbox, add `--recreate`.
 

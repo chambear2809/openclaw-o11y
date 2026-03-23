@@ -85,6 +85,10 @@ get_secret_value() {
   printf '%s' "${encoded}" | base64_decode
 }
 
+base64_encode() {
+  printf '%s' "$1" | base64 | tr -d '\n'
+}
+
 ensure_namespace() {
   kubectl get namespace "${OPENCLAW_NAMESPACE}" >/dev/null 2>&1 || kubectl create namespace "${OPENCLAW_NAMESPACE}" >/dev/null
 }
@@ -92,7 +96,7 @@ ensure_namespace() {
 ensure_secret() {
   local gateway_token="${OPENCLAW_GATEWAY_TOKEN:-}"
   local provider_count=0
-  local literals=()
+  local secret_manifest=""
   local key=""
   local value=""
 
@@ -103,7 +107,17 @@ ensure_secret() {
     gateway_token="$(generate_token)"
   fi
 
-  literals+=("--from-literal=OPENCLAW_GATEWAY_TOKEN=${gateway_token}")
+  secret_manifest="$(cat <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${OPENCLAW_SECRET_NAME}
+  namespace: ${OPENCLAW_NAMESPACE}
+type: Opaque
+data:
+  OPENCLAW_GATEWAY_TOKEN: $(base64_encode "${gateway_token}")
+EOF
+)"
 
   for key in "${PROVIDER_KEYS[@]}"; do
     value="${!key:-}"
@@ -111,7 +125,7 @@ ensure_secret() {
       value="$(get_secret_value "${key}")"
     fi
     if [[ -n "${value}" ]]; then
-      literals+=("--from-literal=${key}=${value}")
+      secret_manifest+=$'\n'"  ${key}: $(base64_encode "${value}")"
       provider_count=$((provider_count + 1))
     fi
   done
@@ -121,10 +135,7 @@ ensure_secret() {
     exit 1
   fi
 
-  kubectl -n "${OPENCLAW_NAMESPACE}" create secret generic "${OPENCLAW_SECRET_NAME}" \
-    "${literals[@]}" \
-    --dry-run=client \
-    -o yaml | kubectl apply -n "${OPENCLAW_NAMESPACE}" -f - >/dev/null
+  printf '%s\n' "${secret_manifest}" | kubectl apply -f - >/dev/null
 }
 
 show_token() {

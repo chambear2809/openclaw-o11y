@@ -125,7 +125,6 @@ run_remote_emitter() {
     "DEMO_SCENARIO=${scenario_name}"
     "DEMO_GATEWAY_MODE=${gateway_mode}"
     "DEMO_GATEWAY_PORT=${gateway_port}"
-    "DEMO_GATEWAY_TOKEN=${token}"
     "DEMO_INVALID_GATEWAY_TOKEN=denied-demo-token"
     "DEMO_REQUEST_COUNT=${request_count}"
     "DEMO_WORKFLOW_OUTCOME=${workflow_outcome}"

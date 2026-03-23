@@ -11,7 +11,6 @@ load_lab_env
 require_tool node
 require_tool curl
 require_tool lsof
-require_env OPENAI_API_KEY
 
 print_endpoint="false"
 
@@ -60,9 +59,13 @@ stop_relay() {
 }
 
 start_relay() {
-  echo "Starting local OpenAI relay on port ${relay_port}" >&2
+  if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+    echo "Starting local OpenAI relay on port ${relay_port}" >&2
+  else
+    echo "Starting local OpenAI relay on port ${relay_port} without a default OpenAI API key; stub traffic and caller-supplied Authorization headers will still work" >&2
+  fi
   nohup env \
-    OPENAI_API_KEY="${OPENAI_API_KEY}" \
+    OPENAI_API_KEY="${OPENAI_API_KEY:-}" \
     LOCAL_OPENAI_RELAY_PORT="${relay_port}" \
     LOCAL_OPENAI_SMOKE_STUB_MODEL="${relay_smoke_stub_model}" \
     node "${SCRIPT_DIR}/openai-relay.js" >"${relay_log_file}" 2>&1 &
@@ -85,7 +88,7 @@ start_relay() {
 relay_health_json="$(curl -fsS "${relay_health_url}" 2>/dev/null || true)"
 
 if [[ -n "${relay_health_json}" ]]; then
-  if ! printf '%s\n' "${relay_health_json}" | grep -Fq '"relayVersion":2'; then
+  if ! printf '%s\n' "${relay_health_json}" | grep -Fq '"relayVersion":3'; then
     echo "Restarting local OpenAI relay to pick up the current relay implementation" >&2
     stop_relay
     relay_health_json=""

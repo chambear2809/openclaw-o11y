@@ -43,6 +43,76 @@ echo "Checking Node.js syntax"
 node --check scripts/k8s/*.js
 node --check scripts/local/*.js
 
+echo "Checking local policy preset merge idempotence"
+node - <<'NODE'
+const fs = require("fs");
+const {
+  extractPresetEntries,
+  mergePresetEntries,
+} = require("./scripts/local/apply-policy-preset.js");
+
+const presetContent = fs.readFileSync("./scripts/local/presets/otel-collector.yaml", "utf8");
+const presetEntries = extractPresetEntries(presetContent);
+if (!presetEntries) {
+  throw new Error("Could not extract network_policies from the OTEL preset");
+}
+
+const currentPolicy = [
+  "version: 1",
+  "",
+  "network_policies:",
+  "  npm_registry_node:",
+  "    name: npm_registry_node",
+  "    endpoints:",
+  "      - host: stale.example.com",
+  "        port: 443",
+  "        access: full",
+  "",
+  "inference_policy:",
+  "  mode: suggest",
+].join("\n");
+
+const mergedOnce = mergePresetEntries(currentPolicy, presetEntries);
+const mergedTwice = mergePresetEntries(mergedOnce, presetEntries);
+const npmRegistryNodeCount = (mergedTwice.match(/^  npm_registry_node:/gm) || []).length;
+const otelForwarderCount = (mergedTwice.match(/^  otel_forwarder:/gm) || []).length;
+
+if (npmRegistryNodeCount !== 1 || otelForwarderCount !== 1) {
+  throw new Error("Policy preset merge duplicated network policy entries");
+}
+if (!mergedTwice.includes("inference_policy:\n  mode: suggest")) {
+  throw new Error("Policy preset merge dropped unrelated top-level policy sections");
+}
+NODE
+
+echo "Checking demo emitter OTLP normalization and span kinds"
+node - <<'NODE'
+const { execFileSync } = require("child_process");
+
+const output = execFileSync("node", ["scripts/k8s/demo-emitter.js"], {
+  cwd: process.cwd(),
+  encoding: "utf8",
+  env: {
+    ...process.env,
+    DEMO_PRINT_ONLY: "true",
+    DEMO_SCENARIO: "normal",
+    DEMO_GATEWAY_MODE: "none",
+    DEMO_COLLECTOR_URL: "http://collector.example:4318/v1/traces",
+  },
+});
+
+const payload = JSON.parse(output);
+if (payload.normalizedCollectorUrl !== "http://collector.example:4318") {
+  throw new Error(`Unexpected normalized collector URL: ${payload.normalizedCollectorUrl}`);
+}
+
+const spans =
+  payload.payloads.traces.resourceSpans[0].scopeSpans[0].spans;
+if (spans.some((span) => span.kind === 2)) {
+  throw new Error("Synthetic demo spans should not be emitted as SERVER spans");
+}
+NODE
+
 echo "Rendering Kubernetes manifests without instrumentation"
 rendered_without_instrumentation="$(mktemp)"
 rendered_with_instrumentation="$(mktemp)"

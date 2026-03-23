@@ -176,6 +176,10 @@ local_openai_smoke_timeout_seconds() {
   printf '%s\n' "${LOCAL_OPENAI_SMOKE_TIMEOUT_SECONDS:-45}"
 }
 
+local_splunk_otel_js_version() {
+  printf '%s\n' "${LOCAL_SPLUNK_OTEL_JS_VERSION:-4.0.0}"
+}
+
 gateway_container_name() {
   printf 'openshell-cluster-%s\n' "$(local_openshell_gateway_name)"
 }

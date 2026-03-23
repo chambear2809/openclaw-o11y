@@ -119,7 +119,6 @@ async function httpRequest(urlString, options = {}) {
 async function gatewayRequest({ token, port }) {
   const validToken = env("DEMO_GATEWAY_TOKEN", env("OPENCLAW_GATEWAY_TOKEN", ""));
   const url = new URL(`http://127.0.0.1:${port}/__openclaw__/canvas/`);
-  url.searchParams.set("token", token);
   const startedAt = Date.now();
   try {
     const response = await httpRequest(url.toString(), {
@@ -259,13 +258,14 @@ function buildTracePayload(summary, traceId, spanIds, endedAtNano) {
   const securityEndNano = offsetUnixNano(securityStartNano, 6);
   const statusCode =
     env("DEMO_WORKFLOW_OUTCOME", "success") === "success" ? 1 : 2;
+  const internalSpanKind = 1;
 
   const spans = [
     {
       traceId,
       spanId: spanIds.root,
       name: "nemoclaw.workflow.run",
-      kind: 2,
+      kind: internalSpanKind,
       startTimeUnixNano: rootStartNano,
       endTimeUnixNano: offsetUnixNano(securityEndNano, 1),
       attributes: attributesFromObject({
@@ -301,7 +301,7 @@ function buildTracePayload(summary, traceId, spanIds, endedAtNano) {
       spanId: spanIds.policy,
       parentSpanId: spanIds.root,
       name: "openshell.policy.evaluate",
-      kind: 2,
+      kind: internalSpanKind,
       startTimeUnixNano: policyStartNano,
       endTimeUnixNano: policyEndNano,
       attributes: attributesFromObject({
@@ -320,7 +320,7 @@ function buildTracePayload(summary, traceId, spanIds, endedAtNano) {
       spanId: spanIds.gateway,
       parentSpanId: spanIds.root,
       name: "openclaw.gateway.exercise",
-      kind: 2,
+      kind: internalSpanKind,
       startTimeUnixNano: gatewayStartNano,
       endTimeUnixNano: gatewayEndNano,
       attributes: attributesFromObject({
@@ -339,7 +339,7 @@ function buildTracePayload(summary, traceId, spanIds, endedAtNano) {
       spanId: spanIds.security,
       parentSpanId: spanIds.root,
       name: "security.agent_assessment",
-      kind: 2,
+      kind: internalSpanKind,
       startTimeUnixNano: securityStartNano,
       endTimeUnixNano: securityEndNano,
       attributes: attributesFromObject({
@@ -540,8 +540,13 @@ function buildLogPayload(summary, traceId, spanId, endedAtNano) {
   };
 }
 
+function normalizeCollectorBaseUrl(urlString) {
+  const trimmed = urlString.replace(/\/+$/, "");
+  return trimmed.replace(/\/v1\/(?:traces|metrics|logs)$/i, "");
+}
+
 async function postPayload(baseUrl, path, payload) {
-  const response = await httpRequest(`${baseUrl}${path}`, {
+  const response = await httpRequest(`${normalizeCollectorBaseUrl(baseUrl)}${path}`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -573,19 +578,21 @@ async function main() {
   const logs = buildLogPayload(summary, traceId, spanIds.security, endedAtNano);
   const printOnly = envBool("DEMO_PRINT_ONLY", false);
   const collectorUrl = env("DEMO_COLLECTOR_URL", "").replace(/\/$/, "");
+  const normalizedCollectorUrl = collectorUrl ? normalizeCollectorBaseUrl(collectorUrl) : "";
 
   if (!printOnly) {
-    if (!collectorUrl) {
+    if (!normalizedCollectorUrl) {
       throw new Error("DEMO_COLLECTOR_URL must be set when DEMO_PRINT_ONLY=false");
     }
-    await postPayload(collectorUrl, "/v1/traces", traces);
-    await postPayload(collectorUrl, "/v1/metrics", metrics);
-    await postPayload(collectorUrl, "/v1/logs", logs);
+    await postPayload(normalizedCollectorUrl, "/v1/traces", traces);
+    await postPayload(normalizedCollectorUrl, "/v1/metrics", metrics);
+    await postPayload(normalizedCollectorUrl, "/v1/logs", logs);
   }
 
   const output = {
     scenario: env("DEMO_SCENARIO", "normal"),
     collectorUrl: printOnly ? "(print-only)" : collectorUrl,
+    normalizedCollectorUrl: normalizedCollectorUrl || "(unset)",
     gatewayResults,
     summary,
     resourceServiceName: env(

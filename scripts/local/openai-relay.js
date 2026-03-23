@@ -78,6 +78,24 @@ function jsonResponse(res, statusCode, payload, extraHeaders = {}) {
   res.end(JSON.stringify(payload));
 }
 
+async function writeUpstreamResponse(res, upstreamResponse) {
+  const responseHeaders = filterHeaders(Object.fromEntries(upstreamResponse.headers.entries()));
+  res.writeHead(upstreamResponse.status, responseHeaders);
+
+  if (!upstreamResponse.body) {
+    res.end();
+    return;
+  }
+
+  for await (const chunk of upstreamResponse.body) {
+    if (!res.write(chunk)) {
+      await new Promise((resolve) => res.once("drain", resolve));
+    }
+  }
+
+  res.end();
+}
+
 function eventStreamHeaders() {
   return {
     "content-type": "text/event-stream; charset=utf-8",
@@ -268,7 +286,8 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         upstreamBase,
         smokeStubModel,
-        relayVersion: 2,
+        defaultApiKeyConfigured: defaultApiKey !== "",
+        relayVersion: 3,
       });
       return;
     }
@@ -318,10 +337,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const responseHeaders = filterHeaders(Object.fromEntries(upstreamResponse.headers.entries()));
-    res.writeHead(upstreamResponse.status, responseHeaders);
-    const upstreamBody = Buffer.from(await upstreamResponse.arrayBuffer());
-    res.end(upstreamBody);
+    await writeUpstreamResponse(res, upstreamResponse);
   } catch (error) {
     process.stderr.write(`relay error: ${error instanceof Error ? error.stack || error.message : String(error)}\n`);
     res.writeHead(502, { "content-type": "application/json" });

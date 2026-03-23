@@ -100,6 +100,6 @@ else
 fi
 
 if [[ "${SMOKE_GATEWAY}" == "true" ]]; then
-  smoke_output="$(kubectl -n "${OPENCLAW_NAMESPACE}" exec "${pod}" -c "${OPENCLAW_CONTAINER_NAME}" -- node -e 'const http=require("http"); const token=process.env.OPENCLAW_GATEWAY_TOKEN || ""; const path="/__openclaw__/canvas/?token="+encodeURIComponent(token); const headers=token ? {Authorization:"Bearer "+token} : {}; const req=http.get({host:"127.0.0.1", port:18789, path, headers}, (res)=>{console.log("STATUS="+res.statusCode); res.resume(); res.on("end", ()=>process.exit(res.statusCode===200 ? 0 : 1));}); req.on("error", (err)=>{console.error("ERROR="+err.message); process.exit(1);});')"
+  smoke_output="$(kubectl -n "${OPENCLAW_NAMESPACE}" exec "${pod}" -c "${OPENCLAW_CONTAINER_NAME}" -- node -e 'const http=require("http"); const token=process.env.OPENCLAW_GATEWAY_TOKEN || ""; const path="/__openclaw__/canvas/"; const headers=token ? {Authorization:"Bearer "+token} : {}; const req=http.get({host:"127.0.0.1", port:18789, path, headers}, (res)=>{console.log("STATUS="+res.statusCode); res.resume(); res.on("end", ()=>process.exit(res.statusCode===200 ? 0 : 1));}); req.on("error", (err)=>{console.error("ERROR="+err.message); process.exit(1);});')"
   ok "Gateway smoke request succeeded: ${smoke_output}"
 fi
